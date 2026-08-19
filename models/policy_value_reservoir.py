@@ -32,7 +32,26 @@ class PolicyValueReservoir(nn.Module):
         # the embedding's init so the induced reservoir input current lands in the
         # ~0.3-std band W_in was tuned for, instead of assuming it transfers from a
         # discrete byte-embedding to a continuous observation vector unchanged.
-        nn.init.normal_(self.embedding.weight, std=1.0 / math.sqrt(embed_dim))
+        #
+        # The fan-in term is obs_dim*embed_dim, NOT embed_dim: spiking_backprop_lm.py
+        # uses nn.Embedding (a row lookup, effective fan-in 1, so 1/sqrt(embed_dim) is
+        # right there), but this arm takes a CONTINUOUS observation through
+        # nn.Linear(obs_dim, embed_dim), whose fan-in is obs_dim. Carrying the
+        # nn.Embedding formula over unchanged overshoots by sqrt(obs_dim) (~3.6x
+        # measured), which is why the extra obs_dim factor is here.
+        #
+        # MEASURED (synthetic obs ~ N(0,1), obs_dim=12, embed_dim=32, 4096 samples):
+        # induced input-current std = 0.3163 (1.05x the 0.3 target; it was 1.0918,
+        # i.e. 3.65x, under the old 1/sqrt(embed_dim) init), giving a mean spike rate
+        # of 2.4% -- inside the ~2% band spiking_reservoir.py documents as healthy.
+        #
+        # KNOWN GAP: that measurement assumes standard-normal observations. The real
+        # obs vector's scale comes from the env's normalization (Task 5), so a residual
+        # calibration gap may remain until real observation statistics are available;
+        # this init is correct STRUCTURALLY (right fan-in) but its scalar has only been
+        # validated against synthetic input. Re-measure against real obs before
+        # trusting the spike rate in the actual experiment.
+        nn.init.normal_(self.embedding.weight, std=1.0 / math.sqrt(obs_dim * embed_dim))
         nn.init.zeros_(self.embedding.bias)
         self.reservoir = SpikingReservoir(
             reservoir_size=reservoir_size, input_dim=embed_dim, seed=seed,
