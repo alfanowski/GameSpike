@@ -89,13 +89,6 @@ repo, so skip that specific sub-step), the vendored `spiking_reservoir.py` /
 from the `mkdir -p models envs training tests checkpoints` line onward, skip the
 already-created files, then proceed through Steps 2-5 as written.
 
-## Running the test suite
-
-\`\`\`bash
-python -m pytest tests/ -q
-\`\`\`
-```
-
 - [ ] **Step 2: Vendor the reservoir core, unmodified**
 
 ```bash
