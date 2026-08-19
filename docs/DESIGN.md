@@ -36,16 +36,59 @@ reward signal — was not found in the published literature at design time. As w
 prior two projects: every individual component is established; the combination is the bet.
 
 **Explicit target selection reasoning.** Pokémon (or any RPG) was considered and
-rejected as the first target for the same structural reason the LM project failed at
+rejected as the *first* target for the same structural reason the LM project failed at
 open-domain generation: RPGs demand strategic planning, inventory/menu state, and
 game-specific knowledge accumulated over long horizons — exactly what a frozen reservoir
 with a small trained readout cannot represent well. **Super Mario Land (Game Boy, 1989)**
 is the first target: a scrolling platformer with a naturally-shaped reward (rightward
 progress), a small discrete action space, and enemy/obstacle patterns with real periodic
 structure — a good match for resonate-and-fire's frequency decomposition, once that
-mechanism is validated in isolation (§7). Pokémon-style RPGs remain a possible far-future
-target only if a hierarchical extension (a planning layer above the reservoir) is added —
-explicitly out of scope for this document.
+mechanism is validated in isolation (§7).
+
+### 1.1 Roadmap: this document is Phase 1 of a stated, larger goal — not the destination
+
+**Stated explicitly, so it never reads as scope-narrowing by omission:** the actual goal
+of this project is a general game-playing agent, not a Mario-Land-only system. This
+document's own single-game, single-variable-ablation scope (§7) is a deliberate
+*sequencing* decision — the same "prove one case scientifically before generalizing"
+discipline already applied in `spiking-reservoir-lm` and the biosignal verticals project —
+not a redefinition of the goal down to one game. The full, real roadmap:
+
+- **Phase 1 (this document + implementation plan).** One game (Super Mario Land, Game
+  Boy), frozen reservoir vs. matched-parameter trained-GRU baseline, mandatory scientific
+  control (§5). Answers: does a frozen reservoir help at all, on real game control, at a
+  real matched parameter budget? Without this answered honestly first, any later claim
+  about generalizing across games would rest on an unverified premise.
+- **Phase 2 (future, not started).** Multi-game generalization *within* Game Boy/Game Boy
+  Color — the same architecture trained/tested across more than one title, addressing the
+  actual hard problem discussed when this was scoped (continual learning, catastrophic
+  forgetting between games — see the brainstorming transcript's review of DeepMind's SIMA
+  1/2 and the continual-RL literature, e.g. Unicorn, DisCoRL, CORA). Genuinely open
+  research, not a solved problem this project can assume away — not attempted until
+  Phase 1 produces a real result.
+- **Phase 3 (future, blocked on a concrete technical issue, not a preference).** Game Boy
+  Advance as a platform. **Current status: blocked.** Investigated directly (2026-08-20,
+  §9.1 addendum below): `pygba`/mGBA (the GBA-equivalent of PyBoy) has no Apple Silicon
+  macOS wheel, and building it from source produces Python bindings that crash with a
+  hard native `SIGBUS` (root-caused to a documented cffi ABI-mode fragility on ARM64) the
+  moment a real ROM is loaded — a platform-level bug external to this project, confirmed
+  by direct investigation, not assumed from documentation. Two possible unblocking paths
+  were identified and neither has been attempted: patching mGBA's own build to use cffi's
+  API mode instead of ABI mode, or bridging over mGBA's built-in Lua scripting API via a
+  socket instead of direct Python bindings. Phase 3 starts only once one of those is
+  proven to work.
+- **Phase 4 (the actual named target).** Pokémon Fire Red / Pokémon-style RPGs on GBA,
+  once Phase 3 unblocks the platform. This is explicitly *not* abandoned — it is
+  sequenced behind a real technical blocker (Phase 3) and a real architectural
+  prerequisite genuinely called out from the start: an RPG's strategic/inventory/long-
+  horizon demands need a planning layer above the frozen reservoir (a hierarchical
+  extension), which has no design yet and is not something this document's architecture
+  provides on its own.
+
+This ordering was chosen, and remains, for real technical reasons (an unresolved platform
+bug, an unsolved research problem, a missing architectural layer) — not because the
+smaller scope was more convenient. Each phase's own document should restate this roadmap
+so it's never implicit.
 
 ## 2. Target hardware and constraints
 
@@ -165,6 +208,15 @@ hidden or reframed — consistent with both prior projects' practice.
 
 ## 7. Build order (phased, single-variable ablation — not a single big-bang build)
 
+**Naming note:** "Phase 0-3" below are build-order stages *within* Roadmap Phase 1
+(§1.1) — a separate, independently-numbered scheme for how this single game's
+architecture gets built up mechanism-by-mechanism, not the same numbering as the
+multi-game/multi-platform roadmap in §1.1 (whose Phase 1 is this entire document).
+Kept as originally numbered (not renamed to avoid disrupting the implementation plan and
+SDD ledger, which already reference "Phase 0"/"Phase 1" in this section's sense) — read
+"Phase" in §7-§9 as this document's own internal build stages, and "Phase" in §1.1 as the
+project-wide roadmap.
+
 1. **Phase 0**: environment wrapper + RAM-state extraction, verified against known game
    states (manual play-through cross-check). No RL yet — pure plumbing correctness.
 2. **Phase 1**: PPO baseline (GRU) vs. PPO + frozen reservoir, **both without**
@@ -224,14 +276,24 @@ build cffi in API mode instead of ABI mode, or bridging over mGBA's own Lua scri
 via a socket instead of direct Python bindings) — neither attempted here, both real,
 nontrivial engineering efforts outside this document's scope.
 
-## 10. Explicitly out of scope for this document
+## 10. Out of scope for THIS document (not abandoned — see the §1.1 roadmap)
 
-- Pokémon or any RPG-genre target (§1 — requires a hierarchical planning extension not
-  designed here).
-- Multi-game generalization / continual learning across titles — a separate, much larger
-  problem (see prior conversation's feasibility discussion on generalist game agents;
-  not attempted until a single-game pipeline is validated).
-- DLIF, RSSR (deferred to Phase 3, §7).
+Everything below is deferred to a later roadmap phase (§1.1), not dropped. Restated here
+so nobody reading only this section mistakes "not built yet" for "not planned":
+
+- **Pokémon Fire Red / any RPG-genre target** — Roadmap Phase 4 (§1.1). Requires both a
+  hierarchical planning extension not designed here AND Roadmap Phase 3 (GBA platform
+  support) to unblock, since Fire Red is a GBA title and this document's PyBoy-based
+  pipeline cannot run GBA ROMs at all (§9.1).
+- **Multi-game generalization / continual learning across titles** — Roadmap Phase 2
+  (§1.1). A separate, genuinely open research problem (see the brainstorming transcript's
+  review of DeepMind's SIMA 1/2 and the continual-RL literature — Unicorn, DisCoRL, CORA);
+  not attempted until this document's single-game pipeline produces a real result.
+- **GBA as a platform generally** — Roadmap Phase 3 (§1.1). Currently blocked on a
+  confirmed native crash in mGBA's Python bindings on Apple Silicon (§9.1), not a
+  scheduling choice.
+- DLIF, RSSR (deferred to build-order Phase 3 within *this* document, §7 — a different,
+  narrower deferral than the roadmap phases above; see §7's naming note).
 - Any cloud GPU rental — zero-budget discipline carried over from the sibling `llm-lab`
   project.
 
