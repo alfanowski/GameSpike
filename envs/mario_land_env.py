@@ -4,7 +4,6 @@ from gymnasium import spaces
 from pyboy import PyBoy
 
 OBS_DIM = 12  # locked in Task 5; placeholder zero-vector until then
-N_ACTIONS = 10  # locked in Task 4; placeholder discrete space until then
 
 
 class MarioLandEnv(gym.Env):
@@ -18,6 +17,23 @@ class MarioLandEnv(gym.Env):
     scan for why (Task 5's own tests need action_index to already exist).
     """
 
+    ACTIONS = [
+        "noop", "left", "right", "left_run", "right_run",
+        "jump", "left_jump", "right_jump", "left_run_jump", "right_run_jump",
+    ]
+    _ACTION_BUTTONS = {
+        "noop": [],
+        "left": ["left"],
+        "right": ["right"],
+        "left_run": ["left", "b"],
+        "right_run": ["right", "b"],
+        "jump": ["a"],
+        "left_jump": ["left", "a"],
+        "right_jump": ["right", "a"],
+        "left_run_jump": ["left", "b", "a"],
+        "right_run_jump": ["right", "b", "a"],
+    }
+
     def __init__(self, rom_path: str, headless: bool = True, frame_skip: int = 4):
         super().__init__()
         self.frame_skip = frame_skip
@@ -25,7 +41,22 @@ class MarioLandEnv(gym.Env):
         self.pyboy = PyBoy(rom_path, window=window)
         self.pyboy.set_emulation_speed(0)
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32)
-        self.action_space = spaces.Discrete(N_ACTIONS)
+        self.action_space = spaces.Discrete(len(self.ACTIONS))
+
+    @classmethod
+    def action_index_static(cls, name: str) -> int:
+        return cls.ACTIONS.index(name)
+
+    def action_index(self, name: str) -> int:
+        return self.ACTIONS.index(name)
+
+    def _press_action(self, action: int):
+        for button in self._ACTION_BUTTONS[self.ACTIONS[action]]:
+            self.pyboy.button_press(button)
+
+    def _release_action(self, action: int):
+        for button in self._ACTION_BUTTONS[self.ACTIONS[action]]:
+            self.pyboy.button_release(button)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
