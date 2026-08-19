@@ -170,7 +170,7 @@ git commit -m "feat: scaffold project, vendor frozen reservoir core from spiking
 
 **Interfaces:**
 - Consumes: nothing from Task 1.
-- Produces: `MarioLandEnv(gymnasium.Env)` class, constructor `MarioLandEnv(rom_path: str, headless: bool = True, frame_skip: int = 4)`; `.reset() -> (obs, info)`; `.step(action: int) -> (obs, reward, terminated, truncated, info)`; `.close()`. In this task `obs` is a placeholder zero-vector and `reward` is always `0.0` — real observation/reward logic is Task 4. This task only proves the emulator boots headless and accepts input without crashing.
+- Produces: `MarioLandEnv(gymnasium.Env)` class, constructor `MarioLandEnv(rom_path: str, headless: bool = True, frame_skip: int = 4)`; `.reset() -> (obs, info)`; `.step(action: int) -> (obs, reward, terminated, truncated, info)`; `.close()`. In this task `obs` is a placeholder zero-vector and `reward` is always `0.0` — real observation/reward logic is Task 5 (Task 4 lands first and adds the action vocabulary). This task only proves the emulator boots headless and accepts input without crashing.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -221,8 +221,8 @@ import gymnasium as gym
 from gymnasium import spaces
 from pyboy import PyBoy
 
-OBS_DIM = 12  # locked in Task 4; placeholder zero-vector until then
-N_ACTIONS = 10  # locked in Task 5; placeholder discrete space until then
+OBS_DIM = 12  # locked in Task 5; placeholder zero-vector until then
+N_ACTIONS = 10  # locked in Task 4; placeholder discrete space until then
 
 
 class MarioLandEnv(gym.Env):
@@ -230,8 +230,10 @@ class MarioLandEnv(gym.Env):
 
     Observation and reward are placeholders in this skeleton (Task 2) --
     verified to boot headless and accept input without crashing. Task 4 wires
-    real RAM-derived observation/reward/termination in using the address map
-    locked by Task 3.
+    the real action vocabulary/button mechanics; Task 5 wires real RAM-derived
+    observation/reward/termination using the address map locked by Task 3.
+    Task 4 runs before Task 5 -- see the ruling in the SDD ledger's pre-flight
+    scan for why (Task 5's own tests need action_index to already exist).
     """
 
     def __init__(self, rom_path: str, headless: bool = True, frame_skip: int = 4):
@@ -250,7 +252,7 @@ class MarioLandEnv(gym.Env):
         # restarts the ROM from power-on, which is enough to verify plumbing.
         self.pyboy.stop(save=False)
         self.pyboy = PyBoy(self.pyboy.cartridge_title and self.pyboy.gamerom_file or None) \
-            if False else self.pyboy  # placeholder no-op guard, replaced in Task 4
+            if False else self.pyboy  # placeholder no-op guard, replaced in Task 5
         obs = np.zeros(OBS_DIM, dtype=np.float32)
         return obs, {}
 
@@ -267,8 +269,8 @@ class MarioLandEnv(gym.Env):
         self.pyboy.stop(save=False)
 ```
 
-**Note flagged for Task 4, not resolved here:** the `reset()` re-instantiation logic
-above is intentionally a placeholder guarded to be a no-op (`if False`) — Task 4
+**Note flagged for Task 5, not resolved here:** the `reset()` re-instantiation logic
+above is intentionally a placeholder guarded to be a no-op (`if False`) — Task 5
 replaces it with real savestate-based reset once Task 3 has captured a fixed
 starting savestate. Leaving a working but not-yet-correct reset would silently
 mask bugs; leaving an honestly-inert placeholder does not.
@@ -398,7 +400,7 @@ confirmation; a wrong address fails silently (it just reads a plausible-looking
 wrong number), which is worse than a crash.
 """
 
-# --- CONFIRM AND FILL IN before Task 4 depends on this file ---
+# --- CONFIRM AND FILL IN before Task 5 depends on this file ---
 ADDR_MARIO_X = None       # world-relative X position (confirm: monotonic while holding right)
 ADDR_MARIO_Y = None       # screen-relative Y position (confirm: decreases while jumping)
 ADDR_LIVES = None         # confirm: decrements on death, visible on the lives-lost screen
@@ -523,22 +525,142 @@ git commit -m "feat: empirical RAM-address discovery tool and locked, invariant-
 
 ---
 
-## Task 4: Observation, reward, and termination logic
+## Task 4: Discrete action space
+
+> **Ordering ruling (SDD pre-flight):** this task was originally numbered 5 and
+> the observation/reward/termination task was numbered 4. Swapped: the original
+> Task 4 could not pass its own tests without the original Task 5's
+> `action_index` already existing, violating "each task ends with an
+> independently testable deliverable." This task now runs first and needs
+> nothing but Task 2's skeleton; the observation/reward/termination task (now
+> Task 5) builds on top of it. See the ledger's pre-flight scan table for the
+> full ruling.
+
+**Files:**
+- Modify: `envs/mario_land_env.py`
+- Test: `tests/test_action_space.py`
+
+**Interfaces:**
+- Consumes: `MarioLandEnv` skeleton (Task 2).
+- Produces: `MarioLandEnv.ACTIONS: list[str]` (length 10), `.action_index_static(name: str) -> int` (classmethod), `.action_index(name: str) -> int`, `._press_action(action: int)`, `._release_action(action: int)`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_action_space.py
+from envs.mario_land_env import MarioLandEnv
+
+EXPECTED_ACTIONS = [
+    "noop", "left", "right", "left_run", "right_run",
+    "jump", "left_jump", "right_jump", "left_run_jump", "right_run_jump",
+]
+
+
+def test_action_list_matches_action_space_size():
+    assert MarioLandEnv.ACTIONS == EXPECTED_ACTIONS
+    assert len(MarioLandEnv.ACTIONS) == 10
+
+
+def test_action_index_roundtrip():
+    for i, name in enumerate(EXPECTED_ACTIONS):
+        assert MarioLandEnv.action_index_static(name) == i
+```
+
+This test needs no ROM — it only touches class-level attributes and a
+classmethod, so it runs unconditionally (unlike the env tests around it).
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_action_space.py -v`
+Expected: FAIL (`AttributeError: type object 'MarioLandEnv' has no attribute 'ACTIONS'`).
+
+- [ ] **Step 3: Implement the action space on top of Task 2's skeleton**
+
+```python
+# envs/mario_land_env.py  (additions to the Task-2 skeleton)
+
+class MarioLandEnv(gym.Env):
+    ACTIONS = [
+        "noop", "left", "right", "left_run", "right_run",
+        "jump", "left_jump", "right_jump", "left_run_jump", "right_run_jump",
+    ]
+    _ACTION_BUTTONS = {
+        "noop": [],
+        "left": ["left"],
+        "right": ["right"],
+        "left_run": ["left", "b"],
+        "right_run": ["right", "b"],
+        "jump": ["a"],
+        "left_jump": ["left", "a"],
+        "right_jump": ["right", "a"],
+        "left_run_jump": ["left", "b", "a"],
+        "right_run_jump": ["right", "b", "a"],
+    }
+
+    # ... (__init__ unchanged from Task 2, EXCEPT replace
+    # `self.action_space = spaces.Discrete(N_ACTIONS)` with
+    # `self.action_space = spaces.Discrete(len(self.ACTIONS))`)
+
+    @classmethod
+    def action_index_static(cls, name: str) -> int:
+        return cls.ACTIONS.index(name)
+
+    def action_index(self, name: str) -> int:
+        return self.ACTIONS.index(name)
+
+    def _press_action(self, action: int):
+        for button in self._ACTION_BUTTONS[self.ACTIONS[action]]:
+            self.pyboy.button_press(button)
+
+    def _release_action(self, action: int):
+        for button in self._ACTION_BUTTONS[self.ACTIONS[action]]:
+            self.pyboy.button_release(button)
+```
+
+`step()` still uses Task 2's placeholder body (zero observation, zero reward)
+— this task only adds the action vocabulary and button-press mechanics, it
+does NOT yet call `_press_action`/`_release_action` from `step()`. That wiring
+happens in Task 5, alongside the real observation/reward logic, so the two
+concerns land in one coherent diff instead of two half-finished `step()` bodies.
+
+**Verification note:** PyBoy's `button_press`/`button_release` accepting these
+exact lowercase string names (`"left"`, `"right"`, `"a"`, `"b"`) is the current
+documented API as of PyBoy 2.x at design time. Before running Step 4, confirm
+against the actually-installed version: `python -c "import pyboy, inspect;
+print(inspect.signature(pyboy.PyBoy.button_press))"` — if the installed API
+differs, adapt the calls above to match, don't assume.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python -m pytest tests/test_action_space.py -v`
+Expected: `2 passed`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add envs/mario_land_env.py tests/test_action_space.py
+git commit -m "feat: discrete 10-action button-combination space"
+```
+
+---
+
+## Task 5: Observation, reward, and termination logic
 
 **Files:**
 - Modify: `envs/mario_land_env.py`
 - Test: `tests/test_mario_land_env.py`
 
 **Interfaces:**
-- Consumes: `envs.ram_map.{read_mario_x, read_mario_y, read_lives, read_timer, read_powerup_state, read_score}` (Task 3).
+- Consumes: `envs.ram_map.{read_mario_x, read_mario_y, read_lives, read_timer, read_powerup_state, read_score}` (Task 3); `MarioLandEnv.ACTIONS` / `.action_index` / `._press_action` / `._release_action` (Task 4, already in the file).
 - Produces: `MarioLandEnv.reset()` / `.step()` now return a real 12-dim observation
   (`OBS_DIM = 12`, order: `[mario_x_delta_norm, mario_y_norm, vel_x_norm, vel_y_norm,
   on_ground_flag, timer_norm, lives_norm, powerup_norm, score_delta_norm, 0, 0, 0]`
   — the last three slots reserved for enemy-relative features, wired in a later
   plan once enemy RAM slots are located; zero-filled here and documented as such,
   not silently omitted from the vector's shape) and a real dense reward
-  (position-delta based). `terminated=True` on death or level completion,
-  `truncated=True` on a step-count timeout.
+  (position-delta based), with `step()` now actually pressing/releasing buttons
+  via Task 4's `_press_action`/`_release_action`. `terminated=True` on death or
+  level completion, `truncated=True` on a step-count timeout.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -582,13 +704,15 @@ def test_episode_truncates_at_max_steps():
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_mario_land_env.py -v`
-Expected: FAIL (`AttributeError: 'MarioLandEnv' object has no attribute 'action_index'`,
-and reward is always `0.0` from Task 2's placeholder).
+Expected: FAIL (`AttributeError: 'MarioLandEnv' object has no attribute 'max_episode_steps'`,
+and reward is always `0.0` from Task 2's placeholder `step()` body).
 
 - [ ] **Step 3: Implement real observation/reward/termination**
 
 ```python
-# envs/mario_land_env.py  (replacing the Task-2 placeholder body)
+# envs/mario_land_env.py  (replacing Task 2's placeholder step()/reset() bodies;
+# Task 4's ACTIONS / _ACTION_BUTTONS / action_index / _press_action /
+# _release_action are already in the file and are NOT touched here)
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -602,6 +726,9 @@ X_DELTA_NORM = 8.0        # normalization constant for per-frame-skip X movement
 
 
 class MarioLandEnv(gym.Env):
+    # ACTIONS / _ACTION_BUTTONS / action_index_static / action_index / _press_action /
+    # _release_action unchanged from Task 4 -- not repeated here.
+
     def __init__(self, rom_path: str, headless: bool = True, frame_skip: int = 4,
                  max_episode_steps: int = 3000):
         super().__init__()
@@ -612,7 +739,7 @@ class MarioLandEnv(gym.Env):
         self.pyboy = PyBoy(rom_path, window=self.window)
         self.pyboy.set_emulation_speed(0)
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32)
-        self.action_space = spaces.Discrete(10)  # locked in Task 5
+        self.action_space = spaces.Discrete(len(self.ACTIONS))
         self._prev_x = 0
         self._prev_y = 0
         self._prev_score = 0
@@ -663,7 +790,7 @@ class MarioLandEnv(gym.Env):
         state = self._read_state()
         vel_x = state["x"] - self._prev_x
         vel_y = state["y"] - self._prev_y
-        reward = float(vel_x)  # dense progress reward; level-complete/death bonuses layered in Task 5
+        reward = float(vel_x)  # dense progress reward
         terminated = state["lives"] <= 0
         self._step_count += 1
         truncated = self._step_count >= self.max_episode_steps
@@ -671,27 +798,11 @@ class MarioLandEnv(gym.Env):
         self._prev_x, self._prev_y, self._prev_score = state["x"], state["y"], state["score"]
         return obs, reward, terminated, truncated, {}
 
-    def _press_action(self, action: int):
-        raise NotImplementedError("wired in Task 5")
-
-    def _release_action(self, action: int):
-        raise NotImplementedError("wired in Task 5")
-
-    def action_index(self, name: str) -> int:
-        raise NotImplementedError("wired in Task 5")
-
     def close(self):
         self.pyboy.stop(save=False)
 ```
 
-This intentionally leaves `_press_action`/`_release_action`/`action_index` raising
-`NotImplementedError` — Task 4's own tests exercise reward/termination via a
-temporary direct button hold in a modified `step()`, OR (simpler, chosen here) this
-task's tests are written expecting Task 5 to already exist. **Reorder note:**
-because `test_mario_land_env.py` calls `env.action_index(...)`, execute Task 5
-immediately after this task's Step 3 and before Step 4's test run — see Task 5.
-
-- [ ] **Step 4: Run test to verify it passes (after Task 5's action wiring lands)**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `MARIO_LAND_ROM_PATH=/path/to/rom.gb python -m pytest tests/test_mario_land_env.py -v`
 Expected: `2 passed`.
@@ -705,110 +816,6 @@ git commit -m "feat: wire real RAM-derived observation, reward, and termination 
 
 ---
 
-## Task 5: Discrete action space
-
-**Files:**
-- Modify: `envs/mario_land_env.py`
-- Test: `tests/test_action_space.py`
-
-**Interfaces:**
-- Consumes: `MarioLandEnv` from Task 4 (fills in the three `NotImplementedError` stubs).
-- Produces: `MarioLandEnv.ACTIONS: list[str]` (length 10), `.action_index(name: str) -> int`, `._press_action(action: int)`, `._release_action(action: int)`.
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# tests/test_action_space.py
-from envs.mario_land_env import MarioLandEnv
-
-EXPECTED_ACTIONS = [
-    "noop", "left", "right", "left_run", "right_run",
-    "jump", "left_jump", "right_jump", "left_run_jump", "right_run_jump",
-]
-
-
-def test_action_list_matches_action_space_size():
-    assert MarioLandEnv.ACTIONS == EXPECTED_ACTIONS
-    assert len(MarioLandEnv.ACTIONS) == 10
-
-
-def test_action_index_roundtrip():
-    for i, name in enumerate(EXPECTED_ACTIONS):
-        assert MarioLandEnv.action_index_static(name) == i
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `python -m pytest tests/test_action_space.py -v`
-Expected: FAIL (`AttributeError: type object 'MarioLandEnv' has no attribute 'ACTIONS'`).
-
-- [ ] **Step 3: Implement the action space**
-
-```python
-# envs/mario_land_env.py  (additions/replacements)
-
-class MarioLandEnv(gym.Env):
-    ACTIONS = [
-        "noop", "left", "right", "left_run", "right_run",
-        "jump", "left_jump", "right_jump", "left_run_jump", "right_run_jump",
-    ]
-    _ACTION_BUTTONS = {
-        "noop": [],
-        "left": ["left"],
-        "right": ["right"],
-        "left_run": ["left", "b"],
-        "right_run": ["right", "b"],
-        "jump": ["a"],
-        "left_jump": ["left", "a"],
-        "right_jump": ["right", "a"],
-        "left_run_jump": ["left", "b", "a"],
-        "right_run_jump": ["right", "b", "a"],
-    }
-
-    # ... (__init__ unchanged from Task 4, plus: self.action_space = spaces.Discrete(len(self.ACTIONS)))
-
-    @classmethod
-    def action_index_static(cls, name: str) -> int:
-        return cls.ACTIONS.index(name)
-
-    def action_index(self, name: str) -> int:
-        return self.ACTIONS.index(name)
-
-    def _press_action(self, action: int):
-        for button in self._ACTION_BUTTONS[self.ACTIONS[action]]:
-            self.pyboy.button_press(button)
-
-    def _release_action(self, action: int):
-        for button in self._ACTION_BUTTONS[self.ACTIONS[action]]:
-            self.pyboy.button_release(button)
-```
-
-Also replace `self.action_space = spaces.Discrete(10)` (the Task-4 placeholder
-constant) with `spaces.Discrete(len(self.ACTIONS))` in `__init__`.
-
-**Verification note:** PyBoy's `button_press`/`button_release` accepting these
-exact lowercase string names (`"left"`, `"right"`, `"a"`, `"b"`) is the current
-documented API as of PyBoy 2.x at design time. Before running Step 4, confirm
-against the actually-installed version: `python -c "import pyboy, inspect;
-print(inspect.signature(pyboy.PyBoy.button_press))"` — if the installed API
-differs, adapt the calls above to match, don't assume.
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `python -m pytest tests/test_action_space.py -v`
-Expected: `2 passed`. Then re-run Task 4's test file (it depended on this task):
-`MARIO_LAND_ROM_PATH=/path/to/rom.gb python -m pytest tests/test_mario_land_env.py -v`
-Expected: `2 passed`.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add envs/mario_land_env.py tests/test_action_space.py
-git commit -m "feat: discrete 10-action button-combination space"
-```
-
----
-
 ## Task 6: Baseline GRU policy-value model (mandatory scientific control)
 
 **Files:**
@@ -816,7 +823,7 @@ git commit -m "feat: discrete 10-action button-combination space"
 - Test: `tests/test_policy_value_gru.py`
 
 **Interfaces:**
-- Consumes: `OBS_DIM` (12, from Task 4).
+- Consumes: `OBS_DIM` (12, from Task 5).
 - Produces: `PolicyValueGRU` class, constructor `PolicyValueGRU(obs_dim=12, embed_dim=32, hidden_dim=192, n_actions=10)`; `.init_hidden(batch_size, device) -> h`; `.forward(obs, h) -> (action_logits, value, h_next)` where `obs: (B, obs_dim)`, `h: (1, B, hidden_dim)`, `action_logits: (B, n_actions)`, `value: (B,)`. `.trainable_parameter_count() -> int`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1569,7 +1576,16 @@ from training.ppo import compute_gae, ppo_policy_loss, value_loss, entropy_bonus
 def build_model(arm: str):
     if arm == "baseline":
         model = PolicyValueGRU(obs_dim=12, embed_dim=32, hidden_dim=192, n_actions=10)
-        init_state_fn = model.init_hidden
+        # NOTE: PolicyValueGRU.init_hidden (Task 6) returns a bare tensor, but
+        # collect_rollout_with_model always unpacks/repacks state as a tuple
+        # (via `logits, value, *state = step_fn(...)`). Wrap init_hidden's
+        # return in a 1-tuple here so state[0] in step_fn below is always
+        # valid, on the very first call and every call after -- without this
+        # wrapper the first call passes a raw (1,B,hidden) tensor where
+        # state[0] would slice it to (B,hidden), a silent shape bug that only
+        # a real forward pass surfaces.
+        def init_state_fn(batch_size, device):
+            return (model.init_hidden(batch_size, device),)
         def step_fn(m, obs, state):
             logits, value, h_next = m(obs, state[0])
             return logits, value, h_next
@@ -1795,7 +1811,7 @@ git commit -m "feat: evaluation harness reporting extrinsic/combined return per 
 - True multi-process rollout with a live model (Task 10 is random-policy-only
   multi-process; Task 11's model-driven rollout is single-process) — combining
   them is a follow-up task once both are independently verified.
-- Enemy-relative observation features (Task 4 zero-fills three reserved slots) —
+- Enemy-relative observation features (Task 5 zero-fills three reserved slots) —
   needs its own RAM-address discovery pass (Task 3's tool, re-run for enemy slots).
 - Phase 2 (resonate-and-fire ablation) and Phase 3 (DLIF/RSSR) — separate plans,
   per the design doc's own build order (§7), not started until this plan's
