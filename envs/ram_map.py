@@ -1,61 +1,155 @@
 """Locked, empirically-confirmed Super Mario Land RAM addresses.
 
-Every constant here was confirmed by running envs/ram_scan_tool.py against a
-real ROM and cross-checking against a public disassembly reference -- see
-Task 3, Step 2 of docs/superpowers/plans/2026-08-19-mario-ppo-reservoir.md.
-Do not add or change an address here without re-running that empirical
-confirmation; a wrong address fails silently (it just reads a plausible-looking
-wrong number), which is worse than a crash.
+STATUS: CONFIRMED against `Super Mario Land (World).gb` (cartridge title
+"SUPER MARIOLAND") on 2026-08-20, Task 3 Steps 2/5. Every constant below was
+verified by driving the live game in PyBoy and observing a predicted state
+change -- not by trusting a community RAM map. Where a byte's *encoding* was
+ambiguous it was pinned down by poking a discriminating value into RAM and
+reading back what the game's own HUD-rendering code then drew on screen (the
+background tilemap is an observation channel independent of the RAM read).
 
-STATUS: NOT YET CONFIRMED. No Super Mario Land ROM was available when this file
-was created (MARIO_LAND_ROM_PATH unset), so Step 2's scan could not be run and
-every ADDR_* below is deliberately left as None. Filling these in from memory,
-a community RAM map, or any other non-empirical source is explicitly forbidden
-by this project's design doc (Sec. 2): addresses differ across ROM revisions and
-regions, so an address that was not verified against *this* ROM is not locked.
-Run the scan against your own legally-dumped ROM, then hand-write the results.
+How each one was confirmed:
+  * ADDR_LIVES         2 at the start of 1-1, matching the HUD's "02"; drops
+                       2 -> 1 -> 0 on successive deaths. Encoding: poking 0x15
+                       then dying yielded 0x14 and a HUD reading "14" (a binary
+                       reading would have shown "20"), so the field is BCD.
+  * ADDR_POWERUP_STATE 0 while small. Forcing it to 1 makes the game advance it
+                       to 2 on its own, swaps Mario's sprite tiles (+32), and --
+                       decisively -- turns an enemy collision that kills small
+                       Mario into a mere shrink (2 -> 3 -> 4 -> 0, lives
+                       unchanged). That is the defining behaviour of the super
+                       state, so the game really does read this byte.
+  * ADDR_TIMER_*       See read_timer(): the decoded value matched the on-screen
+                       TIME digits on all 900 frames sampled.
+  * ADDR_SCORE_START   Poking C0A0/C0A1/C0A2 = 0x12/0x34/0x56 made the game draw
+                       "563512", proving 3 BCD byte-pairs, least-significant
+                       first. Each enemy stomp then incremented C0A1 by one BCD
+                       unit (= +100 points), matching the HUD.
+  * ADDR_MARIO_Y       134 standing, 101 at the apex of a jump, back to 134 on
+                       landing. Y grows downward (screen coordinates).
+  * ADDR_MARIO_X       50 at level start, rises to 81, then pins there forever
+                       as the camera takes over. SCREEN-relative -- see below.
+  * ADDR_SCROLL_X      Rises with rightward movement, but it is only the low
+                       byte of the camera position: it wrapped 255 -> 0 twice
+                       within a single 868-frame life. See below.
+  * ADDR_LEVEL_BLOCK   12 at the start of 1-1, rising to 46 with zero decreases
+                       over the same 868 frames, including across both scroll
+                       wraps. This is the un-wrapped part of the camera position.
+
+Do not add or change an address here without repeating that empirical
+confirmation; a wrong address fails silently (it just reads a plausible-looking
+wrong number), which is worse than a crash. The invariant tests in
+tests/test_ram_map_invariants.py re-check these against a real ROM.
 """
 
-# --- CONFIRM AND FILL IN before Task 5 depends on this file ---
-ADDR_MARIO_X = None       # world-relative X position (confirm: monotonic while holding right)
-ADDR_MARIO_Y = None       # screen-relative Y position (confirm: decreases while jumping)
-ADDR_LIVES = None         # confirm: decrements on death, visible on the lives-lost screen
-ADDR_TIMER_HUNDREDS = None
-ADDR_TIMER_TENS = None
-ADDR_TIMER_ONES = None    # confirm: BCD-or-binary digits counting down; verify encoding empirically
-ADDR_POWERUP_STATE = None # confirm: changes on mushroom/flower pickup and on taking damage
-ADDR_SCORE_START = None   # confirm: multi-byte score field, verify byte order empirically
+# --- Mario, screen-relative ---------------------------------------------------
+# WARNING: ADDR_MARIO_X is Mario's X *within the visible screen*, not within the
+# level. Once the camera locks on he sits at 81 and stays there no matter how far
+# he runs: over one measured 868-frame life he advanced ~575px through the level
+# while this byte moved a total of +31. A naive `x_now - x_prev` progress reward
+# built on it is therefore near-zero for almost the whole level, and swings
+# hugely negative on respawn (81 -> 50). Use read_level_progress() instead.
+ADDR_MARIO_X = 0xC202
+ADDR_MARIO_Y = 0xC201
+
+# --- HUD / game state ---------------------------------------------------------
+ADDR_LIVES = 0xDA15          # BCD-encoded, matches the HUD's two lives digits
+ADDR_POWERUP_STATE = 0xFF99  # HRAM. 0=small 1=growing 2=super 3=shrinking 4=post-hit
+ADDR_SCORE_START = 0xC0A0    # 3 bytes of BCD digit-pairs, least significant first
+
+# --- Level timer --------------------------------------------------------------
+# NOT three decimal digits of one number (the pre-confirmation stub assumed that
+# and was wrong). It is a frame sub-counter plus a BCD seconds field:
+ADDR_TIMER_FRAMES = 0xDA00       # counts down 40 -> 1, wraps; one game-second per 40 frames
+ADDR_TIMER_SECONDS_BCD = 0xDA01  # BCD, the tens and ones digits of the displayed time
+ADDR_TIMER_HUNDREDS = 0xDA02     # the hundreds digit (BCD; 0x03 at the start of 1-1 = 400)
+
+# --- Camera / world progress --------------------------------------------------
+# ADDR_SCROLL_X is the camera's horizontal scroll, but only its low 8 bits: it
+# wraps 255 -> 0 every 256 pixels of level, so it is NOT a usable progress signal
+# on its own either. ADDR_LEVEL_BLOCK is the camera's position counted in 16-pixel
+# blocks and does not wrap; read_level_progress() composes the two safely.
+ADDR_SCROLL_X = 0xFFA4     # HRAM, low byte of camera scroll X -- wraps mod 256
+ADDR_LEVEL_BLOCK = 0xC0AB  # camera position in 16px blocks; monotonic within a life
+
+
+def _bcd_to_int(value: int) -> int:
+    """Decode one binary-coded-decimal byte (two decimal digits) to an int."""
+    return (value >> 4) * 10 + (value & 0x0F)
 
 
 def read_mario_x(pyboy) -> int:
-    assert ADDR_MARIO_X is not None, "ADDR_MARIO_X not yet confirmed -- see Task 3 Step 2"
+    """Mario's X *within the screen* (0..81-ish). Not level progress -- see above."""
+    assert ADDR_MARIO_X is not None, "ADDR_MARIO_X not confirmed -- see Task 3 Step 2"
     return pyboy.memory[ADDR_MARIO_X]
 
 
 def read_mario_y(pyboy) -> int:
-    assert ADDR_MARIO_Y is not None, "ADDR_MARIO_Y not yet confirmed -- see Task 3 Step 2"
+    """Mario's Y within the screen; smaller means higher up (134 ground, ~101 jump apex)."""
+    assert ADDR_MARIO_Y is not None, "ADDR_MARIO_Y not confirmed -- see Task 3 Step 2"
     return pyboy.memory[ADDR_MARIO_Y]
 
 
 def read_lives(pyboy) -> int:
-    assert ADDR_LIVES is not None, "ADDR_LIVES not yet confirmed -- see Task 3 Step 2"
-    return pyboy.memory[ADDR_LIVES]
+    assert ADDR_LIVES is not None, "ADDR_LIVES not confirmed -- see Task 3 Step 2"
+    return _bcd_to_int(pyboy.memory[ADDR_LIVES])
 
 
 def read_timer(pyboy) -> int:
-    assert ADDR_TIMER_ONES is not None, "timer addresses not yet confirmed -- see Task 3 Step 2"
-    h = pyboy.memory[ADDR_TIMER_HUNDREDS]
-    t = pyboy.memory[ADDR_TIMER_TENS]
-    o = pyboy.memory[ADDR_TIMER_ONES]
-    return h * 100 + t * 10 + o
+    """The level timer exactly as the HUD shows it (400 at the start of 1-1).
+
+    0xDA00 is a 40-frame sub-counter and deliberately does not contribute: it
+    would make the returned value non-monotonic within each game-second.
+    """
+    assert ADDR_TIMER_SECONDS_BCD is not None, "timer addresses not confirmed -- see Task 3 Step 2"
+    hundreds = _bcd_to_int(pyboy.memory[ADDR_TIMER_HUNDREDS])
+    seconds = _bcd_to_int(pyboy.memory[ADDR_TIMER_SECONDS_BCD])
+    return hundreds * 100 + seconds
+
+
+def read_timer_frames(pyboy) -> int:
+    """Sub-second frame counter of the level timer: counts down 40 -> 1, then wraps."""
+    assert ADDR_TIMER_FRAMES is not None, "timer addresses not confirmed -- see Task 3 Step 2"
+    return pyboy.memory[ADDR_TIMER_FRAMES]
 
 
 def read_powerup_state(pyboy) -> int:
-    assert ADDR_POWERUP_STATE is not None, "ADDR_POWERUP_STATE not yet confirmed -- see Task 3 Step 2"
+    """0=small, 1=growing, 2=super, 3=shrinking, 4=post-hit invulnerable."""
+    assert ADDR_POWERUP_STATE is not None, "ADDR_POWERUP_STATE not confirmed -- see Task 3 Step 2"
     return pyboy.memory[ADDR_POWERUP_STATE]
 
 
 def read_score(pyboy) -> int:
-    assert ADDR_SCORE_START is not None, "ADDR_SCORE_START not yet confirmed -- see Task 3 Step 2"
-    b0, b1, b2 = (pyboy.memory[ADDR_SCORE_START + i] for i in range(3))
-    return b0 * 65536 + b1 * 256 + b2
+    """Score as displayed: three BCD digit-pairs, least significant byte first."""
+    assert ADDR_SCORE_START is not None, "ADDR_SCORE_START not confirmed -- see Task 3 Step 2"
+    low, mid, high = (pyboy.memory[ADDR_SCORE_START + i] for i in range(3))
+    return _bcd_to_int(low) + _bcd_to_int(mid) * 100 + _bcd_to_int(high) * 10000
+
+
+def read_scroll_x(pyboy) -> int:
+    """Low byte of the camera's scroll X. Wraps mod 256 -- never diff this raw."""
+    assert ADDR_SCROLL_X is not None, "ADDR_SCROLL_X not confirmed -- see Task 3 Step 2"
+    return pyboy.memory[ADDR_SCROLL_X]
+
+
+def read_level_block(pyboy) -> int:
+    """Camera position in 16-pixel blocks. Does not wrap; resets on respawn."""
+    assert ADDR_LEVEL_BLOCK is not None, "ADDR_LEVEL_BLOCK not confirmed -- see Task 3 Step 2"
+    return pyboy.memory[ADDR_LEVEL_BLOCK]
+
+
+def read_level_progress(pyboy) -> int:
+    """Mario's approximate position *within the level*, in pixels.
+
+    This is the signal a progress reward should be built on. The camera's
+    un-wrapped block index supplies the coarse part and Mario's screen X the
+    fine part, so the value survives camera scrolling (measured: strictly
+    non-decreasing across an 868-frame rightward run that included two wraps of
+    ADDR_SCROLL_X) while still falling when Mario genuinely walks back left
+    (measured: -48 over 60 frames of holding left).
+
+    Accurate to within one 16px block; it resets to the level's start value when
+    Mario dies, so Task 5 must treat a life loss as an episode/segment boundary
+    rather than feeding that drop into the reward as a giant negative delta.
+    """
+    return read_level_block(pyboy) * 16 + read_mario_x(pyboy)
