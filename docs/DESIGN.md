@@ -199,6 +199,31 @@ measured speedup.
 | Trajectory-novelty-as-curiosity may need reward-weighting/annealing tuning (standard curiosity-bonus pitfall: agent "addicted" to novelty instead of task reward) | Medium | Standard mitigation: anneal the intrinsic-reward weight over training; monitor extrinsic-only return alongside combined return |
 | DLIF/RSSR (Phase 3) may not transfer from biosignal domain at all | High, explicitly deferred | Not attempted until Phase 1–2 succeed, exactly as scoped in §7 |
 
+## 9.1. Platform confirmation addendum (2026-08-20)
+
+During implementation, a GBA pivot was proposed (the project owner had only GBA ROMs on
+hand, no Game Boy dump) and investigated as a real feasibility spike rather than assumed
+either way. Finding: `pygba`/`mgba` (the GBA-equivalent of PyBoy) has no Apple Silicon
+macOS wheel on PyPI; building mGBA from source with Python bindings enabled succeeds
+(core library, Qt frontend, and the bindings themselves all compile cleanly after adding
+two undocumented build-time dependencies, `cffi` and `cached_property`), but loading any
+real ROM through the built bindings crashes with a hard native `SIGBUS` /
+`EXC_ARM_DA_ALIGN`, root-caused via the macOS crash reporter to `ffi_call_SYSV` inside
+libffi, invoked through cffi's ABI-mode calling trampoline — a documented fragility of
+that specific cffi mode on strict-alignment ARM64, external to this project and not
+fixable by any packaging change. **Ruling: the platform stays Game Boy + PyBoy as
+originally designed** (§1, §2) — Tasks 1-3's PyBoy-based pipeline, already built and
+reviewed clean before this investigation, needs zero rework. The project owner supplies
+an actual `.gb` ROM (Super Mario Land preferred per §1's rationale, but any reactive
+Game Boy platformer is an acceptable substitute) rather than pursuing the GBA-emulation
+path further. The full investigation trail (build log locations, exact crash signature,
+dependency-fix sequence) is preserved in the implementation plan's SDD ledger
+(`.superpowers/sdd/2026-08-19-mario-ppo-reservoir/progress.md`) for anyone who later
+wants to revisit a GBA target with a different binding strategy (e.g. patching mGBA to
+build cffi in API mode instead of ABI mode, or bridging over mGBA's own Lua scripting API
+via a socket instead of direct Python bindings) — neither attempted here, both real,
+nontrivial engineering efforts outside this document's scope.
+
 ## 10. Explicitly out of scope for this document
 
 - Pokémon or any RPG-genre target (§1 — requires a hierarchical planning extension not
