@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.9, PyTorch, `snntorch` (LIF reservoir), PyBoy 2.x (headless Game Boy emulation), Gymnasium (env interface), pytest.
 
-**Spec:** `~/Desktop/Projects/spike/spiking-reservoir-rl-design.md` — this plan implements Phase 0 (§7.1, environment plumbing) and Phase 1 (§7.2, reservoir vs. baseline core comparison) only. Phase 2 (resonate-and-fire ablation) and Phase 3 (DLIF/RSSR stretch) are explicitly out of scope for this plan — separate future plans, per the spec's own build order.
+**Spec:** `~/Desktop/Projects/GameSpike/docs/DESIGN.md` — this plan implements Phase 0 (§7.1, environment plumbing) and Phase 1 (§7.2, reservoir vs. baseline core comparison) only. Phase 2 (resonate-and-fire ablation) and Phase 3 (DLIF/RSSR stretch) are explicitly out of scope for this plan — separate future plans, per the spec's own build order.
 
 ## Global Constraints
 
@@ -24,15 +24,15 @@
 ## Task 1: Project scaffolding and vendored reservoir core
 
 **Files:**
-- Create: `spiking-reservoir-rl/.gitignore`
-- Create: `spiking-reservoir-rl/.python-version`
-- Create: `spiking-reservoir-rl/requirements.txt`
-- Create: `spiking-reservoir-rl/README.md`
-- Create: `spiking-reservoir-rl/LICENSE`
-- Create: `spiking-reservoir-rl/models/__init__.py`
-- Create: `spiking-reservoir-rl/models/spiking_reservoir.py` (vendored, unmodified, from `spiking-reservoir-lm/models/spiking_reservoir.py`)
-- Create: `spiking-reservoir-rl/models/baseline_transformer.py` (vendored, unmodified, from `spiking-reservoir-lm/models/baseline_transformer.py` — provides the `Block` causal-attention module later tasks reuse)
-- Test: `spiking-reservoir-rl/tests/test_vendored_reservoir.py`
+- Create: `GameSpike/.gitignore`
+- Create: `GameSpike/.python-version`
+- Create: `GameSpike/requirements.txt`
+- Create: `GameSpike/README.md`
+- Create: `GameSpike/LICENSE`
+- Create: `GameSpike/models/__init__.py`
+- Create: `GameSpike/models/spiking_reservoir.py` (vendored, unmodified, from `spiking-reservoir-lm/models/spiking_reservoir.py`)
+- Create: `GameSpike/models/baseline_transformer.py` (vendored, unmodified, from `spiking-reservoir-lm/models/baseline_transformer.py` — provides the `Block` causal-attention module later tasks reuse)
+- Test: `GameSpike/tests/test_vendored_reservoir.py`
 
 **Interfaces:**
 - Produces: `SpikingReservoir` class (constructor signature: `SpikingReservoir(vocab_size=256, reservoir_size=2048, spectral_radius=1.0, beta=0.9, seed=0, use_tensor_train=False, tt_rank=8, tt_n_cores=4, tt_core_std=None, input_dim=None, soft_spike=False, soft_spike_sigma_frac=0.1)`); methods `.step(x_t, mem, spk) -> (spk_next, mem_next)`, `.readout_feature(spk, mem) -> tensor`, `.reservoir_size`, `.input_dim`. `Block` class (constructor `Block(dim, n_heads, context_len)`, `.forward(x) -> x` for `x: (B, T, dim)`).
@@ -40,7 +40,7 @@
 - [ ] **Step 1: Create the repo skeleton and non-code scaffolding**
 
 ```bash
-cd ~/Desktop/Projects/spike/spiking-reservoir-rl
+cd ~/Desktop/Projects/GameSpike
 mkdir -p models envs training tests checkpoints
 touch models/__init__.py envs/__init__.py training/__init__.py tests/__init__.py
 git init
@@ -76,32 +76,18 @@ pytest
 
 `LICENSE`: copy verbatim from `~/Desktop/Projects/spike/spiking-reservoir-lm/LICENSE` (Apache License 2.0, matching the sibling project).
 
-`README.md`:
-```markdown
-# spiking-reservoir-rl
-
-A frozen spiking-reservoir PPO agent for Super Mario Land (Game Boy), compared
-against a matched-parameter trained-GRU baseline. Sibling project to
-`spiking-reservoir-lm` (byte-level language generation) and the
-`biosignal-reservoir-verticals` design — reuses the same frozen LIF /
-tensor-train reservoir core, applied to real-time game control instead of
-text generation or biosignal interpretation.
-
-See `../spiking-reservoir-rl-design.md` for the full design rationale and
-`docs/superpowers/plans/2026-08-19-mario-ppo-reservoir.md` for the
-implementation plan.
-
-**You must supply your own legally-dumped Super Mario Land ROM.** Set
-`MARIO_LAND_ROM_PATH` to its path; the ROM itself is never committed to this
-repository.
-
-## Setup
-
-\`\`\`bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-\`\`\`
+**Status note (partially complete — read before executing this task):**
+`README.md`, `LICENSE`, `.gitignore`, `.python-version`, `requirements.txt`, and
+`docs/DESIGN.md` already exist and are committed/pushed to
+`https://github.com/alfanowski/GameSpike` (public, repo root — do not recreate
+them; read the real `README.md` rather than reconstructing it from a draft).
+**Still NOT done, still owed by this task's remaining steps:** the
+`models/`, `envs/`, `training/`, `tests/`, `checkpoints/` package directories and
+their `__init__.py` files, `git init` inside them (the repo root is already a git
+repo, so skip that specific sub-step), the vendored `spiking_reservoir.py` /
+`baseline_transformer.py`, and the vendoring-verification smoke test. Start Step 1
+from the `mkdir -p models envs training tests checkpoints` line onward, skip the
+already-created files, then proceed through Steps 2-5 as written.
 
 ## Running the test suite
 
@@ -114,9 +100,9 @@ python -m pytest tests/ -q
 
 ```bash
 cp ~/Desktop/Projects/spike/spiking-reservoir-lm/models/spiking_reservoir.py \
-   ~/Desktop/Projects/spike/spiking-reservoir-rl/models/spiking_reservoir.py
+   ~/Desktop/Projects/GameSpike/models/spiking_reservoir.py
 cp ~/Desktop/Projects/spike/spiking-reservoir-lm/models/baseline_transformer.py \
-   ~/Desktop/Projects/spike/spiking-reservoir-rl/models/baseline_transformer.py
+   ~/Desktop/Projects/GameSpike/models/baseline_transformer.py
 ```
 
 Do not edit either file in this task. They are reused as-is (per design doc §4);
@@ -162,7 +148,7 @@ def test_block_forward_shape():
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
-Run: `cd spiking-reservoir-rl && python -m pytest tests/test_vendored_reservoir.py -v`
+Run: `cd GameSpike && python -m pytest tests/test_vendored_reservoir.py -v`
 Expected: `3 passed`. If any fail, the vendored copy diverged from the source file —
 re-copy rather than debug (this is verbatim-reuse code, not new logic).
 

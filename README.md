@@ -1,4 +1,4 @@
-# spiking-reservoir-rl
+# GameSpike
 
 A frozen spiking-reservoir reinforcement-learning agent for Super Mario Land
 (Game Boy), evaluated against a matched-trainable-parameter GRU baseline under
@@ -53,7 +53,7 @@ runs and produces real numbers, not before.
 ## Repository structure (as specified by the implementation plan)
 
 ```
-spiking-reservoir-rl/
+GameSpike/
 ├── docs/
 │   ├── DESIGN.md                 # full design rationale
 │   └── superpowers/plans/        # implementation plan(s)
@@ -67,8 +67,8 @@ spiking-reservoir-rl/
 ## Setup
 
 ```bash
-git clone https://github.com/alfanowski/spiking-reservoir-rl.git
-cd spiking-reservoir-rl
+git clone https://github.com/alfanowski/GameSpike.git
+cd GameSpike
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -92,14 +92,14 @@ python -m pytest tests/ -q
 ## Citation
 
 ```bibtex
-@misc{alfano_spiking_reservoir_rl,
+@misc{alfano_gamespike,
   author = {Andrea Alfano (Alfanowski)},
-  title  = {spiking-reservoir-rl: A Frozen Tensor-Train Spiking Reservoir as a
+  title  = {GameSpike: A Frozen Tensor-Train Spiking Reservoir as a
             Real-Time Feature Extractor for Reinforcement Learning, Evaluated
             Against a Matched-Parameter Trained Baseline},
   year   = {2026},
   note   = {See docs/DESIGN.md for the full design rationale. A results
             write-up will be added once Phase 1 produces real data.},
-  howpublished = {\url{https://github.com/alfanowski/spiking-reservoir-rl}}
+  howpublished = {\url{https://github.com/alfanowski/GameSpike}}
 }
 ```
