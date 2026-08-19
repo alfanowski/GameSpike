@@ -10,7 +10,7 @@ RAM read itself.
 import os
 import pytest
 from pyboy import PyBoy
-from envs import ram_map
+from envs import boot, ram_map
 
 ROM_PATH = os.environ.get("MARIO_LAND_ROM_PATH")
 
@@ -23,30 +23,11 @@ pytestmark = pytest.mark.skipif(
 # tiles 256..265 for '0'..'9', and 300 is the blank/padding tile.
 _DIGIT_BASE = 256
 _BLANK_TILE = 300
-_ADDR_WORLD_LEVEL = 0xFFB4  # 0x11 == world 1-1; used only to assert the test setup worked
 
 
 def _start_game():
-    """Boot to the start of world 1-1 with the player actually in control.
-
-    Booting and ticking is NOT enough: Super Mario Land sits on the title screen
-    and then plays its own attract-mode demo, during which the ROM -- not the
-    test -- drives Mario. START has to be pressed before the demo takes over.
-    """
-    pyboy = PyBoy(ROM_PATH, window="null")
-    pyboy.set_emulation_speed(0)
-    for _ in range(200):  # past the Nintendo logo, onto the title screen
-        pyboy.tick()
-    pyboy.button_press("start")
-    pyboy.tick()
-    pyboy.button_release("start")
-    for _ in range(200):  # level intro -> player in control
-        pyboy.tick()
-    assert pyboy.memory[_ADDR_WORLD_LEVEL] == 0x11, (
-        "test setup failed: expected to be in world 1-1, got "
-        f"0x{pyboy.memory[_ADDR_WORLD_LEVEL]:02X} -- the boot/START sequence needs re-timing"
-    )
-    return pyboy
+    """Boot to the start of world 1-1 with the player verifiably in control."""
+    return boot.boot_to_level_start(ROM_PATH)
 
 
 def _hud_number(pyboy, x0, y, n):
@@ -361,24 +342,35 @@ def test_scroll_x_wraps_and_so_cannot_be_diffed_raw():
     assert wraps, "scroll X never wrapped; the 'wraps mod 256' warning in ram_map.py needs re-checking"
 
 
-def test_level_progress_is_monotonic_across_a_scroll_wrap():
+def _before_first_death(samples, start_lives):
+    """The prefix of `samples` taken while Mario still had his starting lives."""
+    out = []
+    for row in samples:
+        if row[1] < start_lives:
+            break
+        out.append(row)
+    return out
+
+
+def _progress_run(frames=1300):
+    """One long rightward run, sampled per frame, spanning at least one death."""
     pyboy = _start_game()
     try:
-        start_lives = ram_map.read_lives(pyboy)
-        samples = _run(
-            pyboy, 800, jump_period=40,
+        return _run(
+            pyboy, frames, jump_period=40,
             sample=lambda p: (ram_map.read_level_progress(p), ram_map.read_lives(p),
                               ram_map.read_scroll_x(p)),
         )
     finally:
         pyboy.stop(save=False)
 
+
+def test_level_progress_is_monotonic_across_a_scroll_wrap():
+    samples = _progress_run()
+    start_lives = samples[0][1]
+
     # Only the stretch before the first death is meaningful: dying resets the camera.
-    alive = []
-    for progress, lives, scroll in samples:
-        if lives < start_lives:
-            break
-        alive.append((progress, scroll))
+    alive = [(p, s) for p, lives, s in _before_first_death(samples, start_lives)]
     assert len(alive) > 300, f"died too early ({len(alive)} frames) to cross a scroll wrap"
 
     scrolls = [s for _, s in alive]
@@ -391,4 +383,187 @@ def test_level_progress_is_monotonic_across_a_scroll_wrap():
     assert not drops, f"level progress went backwards while running right: {drops[:5]}"
     assert progresses[-1] - progresses[0] > 200, (
         f"level progress barely moved ({progresses[0]} -> {progresses[-1]}) over a long rightward run"
+    )
+
+
+def test_level_progress_resets_on_death():
+    """Task 5 will rely on this, so it must be pinned, not just documented.
+
+    Dying sends the camera back to the level start, so read_level_progress()
+    collapses. A reward that diffs it frame-to-frame would see one enormous
+    negative spike, which is why a life loss has to be treated as an
+    episode/segment boundary instead.
+    """
+    samples = _progress_run()
+    start_lives = samples[0][1]
+    alive = _before_first_death(samples, start_lives)
+    assert len(alive) < len(samples), (
+        "Mario never died in this run, so the reset could not be observed -- "
+        "lengthen the run or the death-detection here is broken"
+    )
+
+    peak_alive = max(p for p, _, _ in alive)
+    after_death = [p for p, _, _ in samples[len(alive):]]
+    assert min(after_death) < peak_alive - 200, (
+        f"expected progress to collapse back towards the level start after dying, but it "
+        f"peaked at {peak_alive} and never fell below {min(after_death)}"
+    )
+    assert min(after_death) <= alive[0][0], (
+        f"expected the post-death progress to return to (or below) the level-start value "
+        f"{alive[0][0]}, got {min(after_death)}"
+    )
+
+
+# ----------------------------------------------------------------- world/level
+def test_world_level_reads_1_1_and_matches_the_hud():
+    pyboy = _start_game()
+    try:
+        world, level = ram_map.read_world_level(pyboy)
+        hud_world = _hud_number(pyboy, 12, 1, 1)
+        hud_level = _hud_number(pyboy, 14, 1, 1)
+    finally:
+        pyboy.stop(save=False)
+    assert (world, level) == (1, 1), f"expected world 1-1 at the start of a run, got {world}-{level}"
+    assert (world, level) == (hud_world, hud_level), (
+        f"read_world_level() says {world}-{level} but the HUD draws {hud_world}-{hud_level}"
+    )
+
+
+def test_world_level_drives_the_on_screen_world_display():
+    """Causal check that the game renders the level name out of this byte's nibbles.
+
+    The status bar is only redrawn on a level (re)start, so a death is used to
+    force the redraw after poking.
+    """
+    pyboy = _start_game()
+    try:
+        pyboy.memory[ram_map.ADDR_WORLD_LEVEL] = 0x34
+        start_lives = ram_map.read_lives(pyboy)
+        lives_seen = _run(pyboy, 900, sample=ram_map.read_lives)
+        assert min(lives_seen) < start_lives, "Mario never died, so the status bar was never redrawn"
+        for _ in range(240):  # death animation -> respawn -> status bar redrawn
+            pyboy.tick()
+        hud_world = _hud_number(pyboy, 12, 1, 1)
+        hud_level = _hud_number(pyboy, 14, 1, 1)
+        decoded = ram_map.read_world_level(pyboy)
+    finally:
+        pyboy.stop(save=False)
+    assert (hud_world, hud_level) == (3, 4), (
+        f"poked 0xFFB4 = 0x34 but the game drew {hud_world}-{hud_level}; "
+        "this byte is not the world/level the game renders from"
+    )
+    assert decoded == (3, 4), f"read_world_level() returned {decoded}, expected (3, 4)"
+
+
+def test_world_level_alone_cannot_tell_gameplay_from_the_title_screen():
+    """Regression guard for a real defect this suite used to have.
+
+    The boot helper originally gated on `0xFFB4 == 0x11`. That gate is worthless:
+    the byte already reads 0x11 on the title screen, before START is ever pressed,
+    and the attract-mode demo also plays 1-1. If this test ever fails, the
+    behavioural gate in envs/boot.py could be simplified -- until then it must stay.
+    """
+    pyboy = PyBoy(ROM_PATH, window="null")
+    pyboy.set_emulation_speed(0)
+    try:
+        for _ in range(boot.TITLE_SCREEN_FRAMES):  # no START pressed: still the title screen
+            pyboy.tick()
+        title_screen_value = ram_map.read_world_level(pyboy)
+    finally:
+        pyboy.stop(save=False)
+    assert title_screen_value == (1, 1), (
+        f"the title screen used to read as world 1-1, now reads {title_screen_value}; "
+        "re-check why the world/level gate was rejected before relying on this"
+    )
+
+
+def test_boot_gate_rejects_the_attract_mode_demo():
+    """The gate's whole reason to exist: the demo moves Mario without player input."""
+    pyboy = PyBoy(ROM_PATH, window="null")
+    pyboy.set_emulation_speed(0)
+    try:
+        for _ in range(900):  # never press START -> the ROM's own demo takes over
+            pyboy.tick()
+        assert ram_map.read_mario_x(pyboy) > 0, "the demo should be moving Mario around"
+        with pytest.raises(AssertionError, match="not in control|not player-controlled"):
+            boot.assert_player_has_control(pyboy)
+    finally:
+        pyboy.stop(save=False)
+
+
+def test_boot_gate_leaves_the_level_start_untouched():
+    """The control probe must not perturb the state every other test measures."""
+    pyboy = PyBoy(ROM_PATH, window="null")
+    pyboy.set_emulation_speed(0)
+    try:
+        boot.start_game(pyboy, verify_control=False)
+        before = (ram_map.read_mario_x(pyboy), ram_map.read_mario_y(pyboy),
+                  ram_map.read_level_progress(pyboy), ram_map.read_timer(pyboy),
+                  ram_map.read_timer_frames(pyboy), ram_map.read_scroll_x(pyboy))
+        boot.assert_player_has_control(pyboy)
+        after = (ram_map.read_mario_x(pyboy), ram_map.read_mario_y(pyboy),
+                 ram_map.read_level_progress(pyboy), ram_map.read_timer(pyboy),
+                 ram_map.read_timer_frames(pyboy), ram_map.read_scroll_x(pyboy))
+    finally:
+        pyboy.stop(save=False)
+    assert before == after, f"the control probe left the game in a different state: {before} -> {after}"
+
+
+# ------------------------------------------------------------- mutation checks
+# These pin the thing that actually matters about this file: that a *wrong*
+# address or a *wrong* decode is caught rather than silently returning a
+# plausible-looking number. Each entry corrupts one piece of ram_map and asserts
+# that a named invariant above then fails. Without this, every assertion here
+# could be vacuous and the suite would still be green.
+
+def _reversed_byte_order_score(pyboy):
+    low, mid, high = (pyboy.memory[ram_map.ADDR_SCORE_START + i] for i in range(3))
+    return (ram_map._bcd_to_int(high) + ram_map._bcd_to_int(mid) * 100
+            + ram_map._bcd_to_int(low) * 10000)
+
+
+def _old_decimal_digit_timer(pyboy):
+    """The pre-confirmation stub's formula: three plain decimal digits."""
+    return (pyboy.memory[ram_map.ADDR_TIMER_HUNDREDS] * 100
+            + pyboy.memory[ram_map.ADDR_TIMER_SECONDS_BCD] * 10
+            + pyboy.memory[ram_map.ADDR_TIMER_FRAMES])
+
+
+_MUTATIONS = [
+    ("ADDR_MARIO_X", 0xC203, test_mario_x_increases_while_holding_right),
+    ("ADDR_MARIO_Y", 0xC200, test_mario_y_decreases_during_jump),
+    ("ADDR_LIVES", 0xDA16, test_lives_match_the_hud_and_decrement_on_death),
+    # NB: the guard here must be the causal test, not test_powerup_is_small_at_level_start.
+    # The neighbouring byte also reads 0 at the level start, so "is it 0?" is vacuous as a
+    # mutation guard -- only poking the address and demanding Mario's form change pins it.
+    ("ADDR_POWERUP_STATE", 0xFF98, test_powerup_state_actually_drives_marios_form),
+    ("ADDR_SCORE_START", 0xC0A3, test_score_starts_at_zero_and_increases_matching_the_hud),
+    ("ADDR_TIMER_SECONDS_BCD", 0xDA03, test_timer_decoding_matches_the_on_screen_hud),
+    ("ADDR_TIMER_HUNDREDS", 0xDA04, test_timer_decoding_matches_the_on_screen_hud),
+    ("ADDR_TIMER_FRAMES", 0xDA05, test_timer_frame_subcounter_wraps_within_a_second),
+    ("ADDR_SCROLL_X", 0xFFA5, test_scroll_x_advances_while_holding_right),
+    ("ADDR_LEVEL_BLOCK", 0xC0AC, test_mario_x_saturates_and_is_not_a_progress_signal),
+    ("ADDR_WORLD_LEVEL", 0xFFB5, test_world_level_reads_1_1_and_matches_the_hud),
+    # decode mutations, not address mutations
+    ("_bcd_to_int", lambda v: v, test_timer_decoding_matches_the_on_screen_hud),
+    ("read_score", _reversed_byte_order_score, test_score_byte_order_is_least_significant_first),
+    ("read_timer", _old_decimal_digit_timer, test_timer_decoding_matches_the_on_screen_hud),
+]
+
+
+@pytest.mark.parametrize(
+    "attribute,wrong_value,guard",
+    _MUTATIONS,
+    ids=[f"{name}-caught-by-{guard.__name__}" for name, _, guard in _MUTATIONS],
+)
+def test_a_corrupted_ram_map_is_caught_by_these_invariants(attribute, wrong_value, guard, monkeypatch):
+    monkeypatch.setattr(ram_map, attribute, wrong_value)
+    raised = None
+    try:
+        guard()
+    except BaseException as exc:  # noqa: BLE001 -- pytest.fail raises a BaseException subclass
+        raised = exc
+    assert raised is not None, (
+        f"corrupting ram_map.{attribute} did not make {guard.__name__} fail; "
+        "that invariant is not actually pinning this value"
     )

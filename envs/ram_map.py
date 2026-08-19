@@ -35,6 +35,14 @@ How each one was confirmed:
   * ADDR_LEVEL_BLOCK   12 at the start of 1-1, rising to 46 with zero decreases
                        over the same 868 frames, including across both scroll
                        wraps. This is the un-wrapped part of the camera position.
+  * ADDR_WORLD_LEVEL   Poking 0x34 and forcing a status-bar redraw (by dying)
+                       made the game draw "3-4", so it renders the world and
+                       level straight out of this byte's two nibbles. A natural
+                       level change was also observed, 0x11 -> 0x12, with the HUD
+                       following from "1-1" to "1-2". NOTE it is useless as a
+                       "are we in gameplay yet" gate -- it already reads 0x11 on
+                       the title screen at frame 120, before START is pressed.
+                       See envs/boot.py for the gate that actually works.
 
 Do not add or change an address here without repeating that empirical
 confirmation; a wrong address fails silently (it just reads a plausible-looking
@@ -71,6 +79,12 @@ ADDR_TIMER_HUNDREDS = 0xDA02     # the hundreds digit (BCD; 0x03 at the start of
 # blocks and does not wrap; read_level_progress() composes the two safely.
 ADDR_SCROLL_X = 0xFFA4     # HRAM, low byte of camera scroll X -- wraps mod 256
 ADDR_LEVEL_BLOCK = 0xC0AB  # camera position in 16px blocks; monotonic within a life
+
+# --- Which level we are in ----------------------------------------------------
+# HRAM. High nibble = world, low nibble = level (0x11 == world 1-1). Useful to
+# Task 5 for spotting an episode boundary, but NOT usable to detect whether
+# gameplay has started -- see the note in the module docstring.
+ADDR_WORLD_LEVEL = 0xFFB4
 
 
 def _bcd_to_int(value: int) -> int:
@@ -136,6 +150,13 @@ def read_level_block(pyboy) -> int:
     """Camera position in 16-pixel blocks. Does not wrap; resets on respawn."""
     assert ADDR_LEVEL_BLOCK is not None, "ADDR_LEVEL_BLOCK not confirmed -- see Task 3 Step 2"
     return pyboy.memory[ADDR_LEVEL_BLOCK]
+
+
+def read_world_level(pyboy):
+    """The current level as a (world, level) pair -- (1, 1) at the start of a run."""
+    assert ADDR_WORLD_LEVEL is not None, "ADDR_WORLD_LEVEL not confirmed -- see Task 3 Step 2"
+    packed = pyboy.memory[ADDR_WORLD_LEVEL]
+    return packed >> 4, packed & 0x0F
 
 
 def read_level_progress(pyboy) -> int:
