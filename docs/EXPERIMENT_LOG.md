@@ -302,3 +302,152 @@ This ledger will be updated as runs complete and as the evaluation protocol
 observations" and "Status" sections as the only parts expected to go stale
 between reads — everything else (design, reasoning, invariants, hazards) is
 expected to hold for the rest of Phase 1.
+
+---
+
+## 11. Pre-registered ablations A4-A6 (reservoir construction)
+
+Extends §8. Same p-hacking guard, same rule: **every one of these is reported
+regardless of outcome**, and the multiple-comparisons disclosure in §8 now
+covers six ablations against one 10-seed main comparison, not three.
+
+A1-A3 ask what to do with the reservoir arm *as built*. A4-A6 ask a prior and
+more uncomfortable question: **is the frozen reservoir this experiment is
+measuring actually a well-constructed reservoir at all?** If it is not, the
+Phase 1 comparison is not a test of "frozen spiking reservoir vs. trained GRU",
+it is a test of "one particular badly-calibrated frozen reservoir vs. trained
+GRU" — a much weaker claim, and one the writeup would have to make explicitly.
+That is the stake here.
+
+**This section is written and committed BEFORE any of the measurements below
+are taken.** The commit timestamp is the evidence; that is the whole point of
+the ordering. Nothing in §11 may be edited after the fact except by appending
+results beneath it — if a hypothesis stated here turns out wrong, the wrong
+statement stays on the page.
+
+### 11.0 Prior measurements being explained (diagnostics, not Phase 1 results)
+
+Both come from `checkpoints/reservoir_seed0/step_1000064.pt` and are subject to
+the same standing rule as §5: one seed, diagnostic only.
+
+- **52.7%** of the 8192 reservoir units did not spike at all within a sampled
+  128-step window.
+- **1,329 columns (16.22%)** of the readout's `in_proj.weight` had Adam
+  `exp_avg_sq` **exactly** 0 after 3,910 optimizer updates — i.e. **21,264
+  parameters (15.28% of the 139,179 trainable budget, §6)** never received a
+  single gradient in a million env steps of training.
+
+### 11.1 Orientation commitment (declared before measuring, because getting it backwards invalidates A4a)
+
+`ActorCriticReadout.in_proj` is `nn.Linear(reservoir_size, d_model)`
+(`models/actor_critic_readout.py:21`), so `in_proj.weight` has shape
+`(d_model, reservoir_size) = (16, 8192)`. **A reservoir unit therefore indexes a
+COLUMN of `in_proj.weight` (dim 1), not a row.** Unit `j` owns the 16 entries
+`in_proj.weight[:, j]`. This is consistent with the prior measurement above
+reporting 1,329 *columns* and 1,329 × 16 = 21,264 parameters. Every mapping from
+parameter index to unit index in A4a uses dim 1. Recorded here so that if it is
+wrong, it is wrong on the record and before the result.
+
+### A4 — silent units and dead gradients share one root cause
+
+- **H4a (mechanism).** A reservoir unit that never fires contributes a
+  structurally-zero input to its `in_proj` column, so that column's gradient is
+  identically zero on every update, so Adam's `exp_avg_sq` for it stays exactly
+  0. **Prediction: the set of dead-gradient `in_proj` columns EQUALS the set of
+  PERMANENTLY silent units.** Note this is deliberately *not* the per-window
+  silent set: a unit silent across one 128-step window may fire in another,
+  which is precisely why 16.22% and 52.7% are different numbers and why
+  comparing them directly would be a category error. **Test:** set equality plus
+  Jaccard index, against a permanently-silent set measured over ≥5,000 real
+  observation steps.
+  **Cost if wrong.** If the sets do not coincide, then either some column dies
+  for a reason other than silence (an optimizer/clipping pathology — see
+  `training/train.py`'s docstring on the readout being effectively frozen under
+  global clipping, which would be a competing explanation) or some silent unit
+  still accrues gradient. Either way the "one root cause" framing is false and
+  fixing the reservoir would not, on its own, recover the dead 15.28%.
+- **H4b (calibration).** `PolicyValueReservoir`'s embedding init
+  (`models/policy_value_reservoir.py:63`) was calibrated against **synthetic
+  N(0,1) inputs** — the file carries an explicit `# KNOWN GAP:` comment saying
+  the scalar has only been validated against synthetic input and must be
+  re-measured against real observations before the spike rate is trusted. Real
+  observation statistics are now obtainable. **Prediction: the real observation
+  distribution is not N(0,1) — `envs/mario_land_env.py` clips every component
+  into [-1,1] and three of the twelve are hardcoded 0.0 (slots 9-11, reserved
+  enemy features) — the induced input current therefore misses the documented
+  ~0.3 target, and recalibrating the embedding scale against real statistics
+  reduces the silent-unit fraction.**
+  **Cost if wrong.** If the silent fraction is insensitive to embedding scale,
+  silence is a property of the recurrent regime rather than of the drive, and
+  A4b is not the lever — A5/A6 would be.
+- **H4c (selection).** **Prediction: selecting among candidate reservoirs
+  (identical hyperparameters, different seeds) on firing-rate health yields a
+  materially better dynamical regime than taking seed 0 as given.** This is the
+  methodology the sibling `spiking-reservoir-lm` project used in its Task 3.3
+  reservoir-selection probe. It is worth stating explicitly why this is not
+  result-selection: the reservoir is **frozen and never trained**, and the
+  selection criterion (firing-rate health under observation data) is computed
+  **before any training happens** and never sees task reward. Selecting a frozen
+  component on a training-free health statistic is construction; selecting a
+  checkpoint on evaluation reward is the thing §7 forbids. These are different
+  acts and the writeup will keep them distinguished.
+  **Cost if wrong.** If seed-to-seed spread in silent fraction / spike rate is
+  small, seed selection buys nothing and the 10-seed design's reservoir variance
+  is not a construction lever — which would also mean §4's "seeds genuinely
+  produce different frozen reservoirs" is true bitwise but irrelevant
+  dynamically.
+
+### A5 — the chaotic regime is a fixable knob
+
+- **H5.** Sweeping `SpikingReservoir`'s `spectral_radius` over **{0.7, 0.85,
+  0.95, 1.0, 1.05}** (default 1.0) moves normalized entanglement entropy from
+  its measured **0.9918** — essentially the maximum the diagnostic can report,
+  i.e. maximally chaotic — toward the productive band **S̄ ∈ [0.1, 0.5]**
+  reported by Sato et al. 2025, **without collapsing the spike rate**. ≥3 seeds
+  per setting.
+- **Mechanism note, recorded in advance so the result is interpretable.** On the
+  TT path `spectral_radius` does not rescale a materialized matrix; it enters
+  only through the derived core std, `s = (spectral_radius² / (N·R_int))^(1/2d)`
+  (`spiking_reservoir.py:_build_tt_cores`), with `tt_core_std=None`. Since d=4,
+  the exponent is 1/8: a 0.7 vs 1.05 change in spectral radius is a ~1.05x
+  change in core std. **If entropy turns out to be insensitive to spectral
+  radius, that is the reason, and it will be reported as "the knob barely moves
+  the construction", not dressed up as a null result about criticality.**
+  Entanglement entropy is a function of the frozen cores alone and does not
+  depend on observation data; spike rate and silent fraction do.
+- **Cost if wrong.** If entropy cannot be moved out of ~0.99 by this knob, the
+  reservoir cannot be tuned into the published productive band at all through
+  spectral radius, and the Phase 1 reservoir is permanently outside the regime
+  its own design doc cites as productive.
+
+### A6 — TT-rank is a second regime knob
+
+- **H6.** The tensor-train bond dimension drives an order-to-chaos transition
+  analogous to spectral radius (the claim `spiking_reservoir.py`'s own docstring
+  attributes to Sato et al. 2025). Sweep `tt_rank` over **{4, 8, 16, 32}**
+  (default 8), other settings at defaults, ≥3 seeds each, reporting normalized
+  entanglement entropy, % permanently silent units, and mean spike rate.
+- **Confound, declared in advance.** With `tt_core_std=None` the core std is
+  derived as a function of `R_int = tt_rank^(d-1)`, so raising `tt_rank`
+  automatically shrinks the core std to hold the effective per-entry variance of
+  `W_res` matched. The rank sweep is therefore **not** a pure variance sweep —
+  and separately, the reported entropy is normalized by `log(r)` of the cut bond,
+  so its denominator changes with rank too. Both effects will be stated with the
+  numbers rather than left for a reader to discover.
+
+### Explicit falsification condition (binding on all of A4-A6)
+
+**If entanglement entropy CAN be moved into S̄ ∈ [0.1, 0.5] but downstream task
+performance does not improve, that resolves the sibling project's open question
+NEGATIVELY: the entanglement-entropy diagnostic does not predict task
+performance for a spiking substrate, and it will be reported as such** — not
+quietly dropped, and not reframed as a tuning failure. This is a live and
+plausible outcome: `spiking_reservoir.py:entanglement_entropy`'s own docstring
+already warns that Sato et al.'s band was validated on rate-based regression and
+not on a spiking reservoir, which is why the method calls it "a diagnostic to
+log, not a hard gate".
+
+**Reporting rule for all three:** full swept curves, every candidate seed, every
+setting — including the ones where the spike rate collapses. Never a single
+favourable point. Any measurement whose method has a limitation gets the
+limitation printed next to the number.
