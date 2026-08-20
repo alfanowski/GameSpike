@@ -2497,3 +2497,51 @@ convention v1 used and the only stable one here.
   eval driver resolves its 40 `init` jobs, `summarise_training_logs` parses every v2 log
   line with `n_skipped_lines: 0`, and `reservoir_health.py` degrades to `NO DATA` rather
   than raising on runs that do not exist yet.
+
+### 20.5 A9 was pre-flighted on the CRASHED partial run, and the preliminary number it produced is recorded here rather than kept quiet
+
+**Recorded at 00:20, before the real A9 result exists, because the honest thing to do
+with an early look at a pre-registered measurement is to disclose that it was taken.**
+
+`analysis/reservoir_health.py` had only ever been exercised against v1's `legacy` +
+`global` checkpoints (§17.11). It had never run against a **centred-init** checkpoint,
+which is the only kind the v2 verdict will be computed from. It was therefore pre-flighted
+against `checkpoints_v2_crashed/reservoir_seed{0,1}` — the preserved wreckage of the
+power loss (§18), which is bit-identical to the restarted runs over the same steps
+(§18.5).
+
+**The instrument is sound.** It reads all nine partial checkpoints per seed, holds the
+frozen-reservoir invariant at **0.0e+00 max abs diff across 18 checkpoint loads**, and —
+the part that matters — **refuses to present a partial run as a finished one**, printing
+`(PARTIAL RUN -- final on disk is step 900864, expected final is 1000064)` per seed and
+a summary note that these are latest-so-far rather than final values. A measurement tool
+that cannot silently mistake an interrupted run for a complete one is exactly what this
+pipeline needs after §18.
+
+**The preliminary number, labelled as such and not a result.** Two seeds, at step
+900,864 of 1,000,064, from the crashed batch:
+
+| seed | silent @100,096 | silent @900,864 | spike rate @900,864 | saturated |
+|---|---|---|---|---|
+| 0 | 4.7607% | 32.7026% | 0.153962 | 0.0366% |
+| 1 | 6.4087% | 27.5879% | 0.120755 | 0.0000% |
+
+**This is two seeds of a ten-seed measurement, at 90% of the run, and it is not the A9
+verdict.** The verdict is computed over ten seeds at step 1,000,064 by the same script,
+against bands fixed in §15.6 before any v2 run existed — bands this session cannot move
+and did not write. Nothing here is capable of being p-hacked; the disclosure is made
+because "I looked early" is a fact about the process that belongs on the page.
+
+Two observations worth carrying into the write-up, both of which the full measurement
+will either confirm or correct:
+
+1. **§15.1's decay of the centring continues past 300k rather than stabilising.** The
+   silent fraction climbs 4.76% → 32.70% on seed 0 over 900k steps. §15.4's binding
+   constraint on the prose — that v2 may not claim the centred init keeps the reservoir
+   healthy — looks, on this preview, if anything understated.
+2. **§15.5's runaway-firing finding appears in the CENTRED configuration too, just
+   later.** The spike rate reaches 0.154 on seed 0, roughly 7.7x the ~2% band
+   `models/spiking_reservoir.py` documents as healthy. v1's `legacy` runs ended at
+   0.200. So neither shipped fix regulates the operating point over a full run, which is
+   precisely the open problem §15.5 stated and A9 was pre-registered to measure rather
+   than extrapolate.
