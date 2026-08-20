@@ -2040,3 +2040,51 @@ smoke output is the script exercising its verdict logic against the reference
 condition, and what it actually shows is that **v1 sits far outside both predicted
 bands** — which is precisely what makes the v2 predictions non-trivial. The real A7
 and A9 verdicts are computed against `checkpoints_v2` when the matrix completes.
+
+### 17.12 Incident at 21:37 — the chained automation was reaped, the guard caught it, nothing was corrupted
+
+Recorded in full because the guard earning its keep is the whole argument for building
+guards, and because two of the three causes are reusable traps.
+
+**What happened.** The baseline and evaluation chains had been started as managed
+background tasks. At ~21:37 the agent harness reaped those tasks, killing both chain
+processes. The evaluation chain, which was waiting on the baseline chain's PID, saw
+that PID vanish, concluded the baseline arm had "finished", and ran its guard:
+
+```
+both arms finished at 21:37: reservoir 0/10, baseline 0/10
+ABORT: matrix incomplete (reservoir 0/10, baseline 0/10). Evaluation NOT run.
+```
+
+**The guard did exactly its job.** Without it, the pipeline would have run a 120-job
+evaluation matrix against **zero** finished runs and then handed the aggregation an
+empty result set — producing either a crash at 01:00 or, far worse, a "comparison"
+computed over whatever partial data happened to exist. §17.10 argued that evaluating a
+partial matrix is *a wrong result rather than a failed run*; this is that argument
+being cashed in four hours later.
+
+**Nothing was damaged.** The reservoir launcher (PID 30003) was started with `nohup`
+from a wrapper that exited immediately, so it had already been orphaned and adopted by
+`init` — it was never in the reaped task's process group. All ten training processes
+ran through the incident untouched, and the matrix was at 42% when it happened.
+
+**Three lessons, all reusable:**
+
+1. **A process started as an agent-harness background *task* dies when that task is
+   reaped; a process `nohup`-ed from a short-lived wrapper does not.** The difference
+   is whether the long-running process is the task's own main process or an orphan it
+   left behind. Long chains must be orphans.
+2. **`setsid` does not exist on macOS.** `nohup cmd & disown` from a foreground call
+   is the portable equivalent here.
+3. **zsh aborts a command on an unmatched glob** rather than passing the pattern
+   through. `ls checkpoints_v2/baseline_seed*/step_1000064.pt 2>/dev/null | wc -l`
+   printed `no matches found` and yielded 0 **before `ls` ever ran**, so the `2>/dev/null`
+   was useless. Guard counts must use `find ... | wc -l`, or `setopt NULL_GLOB`. This
+   one is nastier than it looks: it fails *toward* zero, which for a completeness guard
+   means it fails safe — but for any check written the other way round it would fail
+   silently open.
+
+**Remediation.** The three separate chain scripts were replaced by one
+`/tmp/gs_pipeline.sh`, launched `nohup`-ed and disowned (PID 34500), which waits on the
+reservoir launcher and then runs baseline -> evaluation -> aggregation -> A7/A9, with a
+`find`-based guard on every arrow and a timestamped log at `pipeline_v2.log`.
