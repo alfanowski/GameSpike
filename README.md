@@ -11,7 +11,45 @@ or biosignal interpretation.
 
 ---
 
-## Status: pipeline complete, experiment not yet run (2026-08-20)
+## Roadmap: Phase 1 of a larger, stated goal
+
+**Stated explicitly, so it never reads as scope-narrowing by omission:** the actual goal of
+this project is a general game-playing agent across Nintendo handheld titles — explicitly
+including Game Boy Advance and **Pokémon Fire Red** — not a Mario-Land-only system. The
+single-game scope below is a deliberate *sequencing* choice, the same "prove one case
+scientifically before generalizing" discipline already used in the sibling
+[`spiking-reservoir-lm`](https://github.com/alfanowski/spiking-reservoir-lm) project, not a
+redefinition of the goal down to one game. Full version:
+[`docs/DESIGN.md` §1.1](docs/DESIGN.md#11-roadmap-this-document-is-phase-1-of-a-stated-larger-goal--not-the-destination).
+
+- **Phase 1 (this repository, currently running).** Super Mario Land, Game Boy: frozen
+  reservoir vs. matched-parameter trained-GRU baseline, under a mandatory scientific
+  control. Answers whether a frozen reservoir helps at all on real game control at a real
+  matched parameter budget — without that answered honestly first, any later claim about
+  generalizing across games would rest on an unverified premise.
+- **Phase 2 (not started).** Multi-game generalization *within* Game Boy / Game Boy Color —
+  the same architecture trained/tested across more than one title. This is genuinely open
+  research — continual learning and catastrophic forgetting across titles — not a solved
+  problem this project gets to assume away. See DeepMind's SIMA 1/2 and the continual-RL
+  literature (Unicorn, DisCoRL, CORA) for the context this is scoped against.
+- **Phase 3 (Game Boy Advance as a platform).** `pygba`/mGBA's direct Python bindings are
+  dead on Apple Silicon — a hard native `SIGBUS`, root-caused to a cffi ABI-mode fragility
+  on strict-alignment ARM64. A **Lua-scripting + local-socket bridge to `mgba-headless`**
+  was built and verified end-to-end instead: 12/12 checks passed, deterministic
+  byte-identical replays, ~3,062 fps single instance and ~15k fps aggregate across 8
+  parallel instances, with real gameplay driven through Super Mario Advance's World 1-1.
+  This is a **proven scratchpad spike, not yet a component of this repository** —
+  formalizing it into a real `gymnasium.Env` is Phase 3's remaining work.
+- **Phase 4 (Pokémon Fire Red / RPG targets).** Needs Phase 3's platform work *plus* a
+  hierarchical planning layer that does not exist yet in this architecture — an RPG's
+  strategic/inventory/long-horizon demands cannot be represented by a frozen reservoir plus
+  a small trained readout alone, which was the original and still-correct reason RPGs were
+  rejected as the Phase 1 target (see below). The available Fire Red ROM is also the
+  **Italian release** (cartridge code `BPRI`), not the US `BPRE` that published community
+  RAM maps target, so its RAM addresses will need the same from-scratch empirical
+  confirmation Super Mario Land's did.
+
+## Status: pipeline complete, Phase 1 experiment running (2026-08-20)
 
 Stated as precisely as possible, in keeping with this project family's practice
 of reporting real status rather than aspirational status (see
@@ -25,18 +63,19 @@ gate, the PPO core, rollout collection, the training loop, and the evaluation
 harness. Both entry points run end-to-end against a real ROM: `training/train.py`
 collects rollouts, applies real gradient updates and writes checkpoints, and
 `training/evaluate.py` loads a checkpoint, plays it and reports per-episode
-statistics with spread. A 119-test suite covers it.
+statistics with spread. A 169-test suite covers it (including the results-aggregation
+module in `analysis/`, added alongside this update).
 
-**What does not exist.** No trained checkpoints, and no results. Nothing here has
-been trained for longer than a smoke run of a few dozen steps — the longest
-executions of this code to date are its own tests. **The Phase 1 comparison
-(frozen reservoir vs. matched-parameter trained GRU) has not been run**, so this
-repository currently contains no evidence either way about the question it exists
-to answer, and no number in it should be quoted as one. A results write-up (this
-project's equivalent of `PAPER.md`) will be added once that comparison actually
-runs and produces real numbers, not before — and per `training/evaluate.py`'s own
-documented requirement, "actually runs" means several independently-trained
-seeds per arm, not one checkpoint each.
+**What does not exist yet.** No trained checkpoints, and no results. **The Phase 1
+comparison (frozen reservoir vs. matched-parameter trained GRU) is now running**: 2 arms
+× 10 independently-seeded training runs each × 1,000,000 env steps per run, per
+`training/evaluate.py`'s own documented requirement that an honest comparison needs
+several independently-trained seeds per arm, not one checkpoint each — plus a set of
+untrained (`--steps 0`) reference checkpoints per arm/seed, kept as an experimental
+control. Until it completes, this repository contains no evidence either way about the
+question it exists to answer, and **no number in it should be quoted as one, in either
+direction**. A results write-up (this project's equivalent of `PAPER.md`) will be added
+once the comparison finishes and produces real numbers, not before.
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — full design rationale: why a reactive
   platformer (not an RPG) was chosen as the first target, the architecture,
@@ -54,12 +93,17 @@ seeds per arm, not one checkpoint each.
   bounded, reactive control task, where a frozen reservoir's actual strength
   (rich nonlinear dynamics obtained "for free," no gradient descent through the
   recurrent core) is a plausible structural fit.
-- **Is not:** a claim of state-of-the-art game-playing performance, a
-  general-purpose game-playing agent, or an RPG/strategy agent — Pokémon-style
-  targets were explicitly considered and rejected for this phase (see
-  `docs/DESIGN.md` §1) for the same structural reason the LM project could not
-  compete on open-domain generation: this architecture has no mechanism for
-  storing broad accumulated knowledge, only for reacting to a state stream.
+- **Is not, yet:** a claim of state-of-the-art game-playing performance, a
+  general-purpose game-playing agent, or an RPG/strategy agent. Today this repository is a
+  single-game, single-architecture experiment — that is what exists right now, not a
+  permanent ceiling. Pokémon-style targets were explicitly considered and rejected as the
+  *first* target (see `docs/DESIGN.md` §1) for the same structural reason the LM project
+  could not compete on open-domain generation: this architecture has no mechanism for
+  storing broad accumulated knowledge, only for reacting to a state stream — a genuinely
+  permanent property of a frozen reservoir plus a small trained readout, not something more
+  training steps fixes. That is exactly why the roadmap above sequences an RPG target
+  (Phase 4) behind a hierarchical planning layer that has to be designed and added on top,
+  rather than assuming this architecture would get there alone.
 - **Every result, positive or negative, will be reported as such.** The
   mandatory-control design (a matched-parameter trained GRU baseline) exists
   specifically so a negative result — the reservoir failing to beat a
