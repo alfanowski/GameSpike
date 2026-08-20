@@ -2494,6 +2494,48 @@ regenerable from a seed (§18.3); **the ledger and the decisions in it are not.*
   forbids during a live run. Do it between steps rather than mid-write, and never race a
   commit that is still in progress.
 
+### 20.7 §17.12's lesson 1 re-observed at 01:11, this time as a controlled contrast
+
+§17.12 established that *"a process started as an agent-harness background **task** dies
+when that task is reaped; a process `nohup`-ed from a short-lived wrapper does not."*
+That was inferred from a single incident in which the orphan survived and the tracked
+processes died — good evidence, but not a controlled comparison, because the two classes
+of process were also doing different jobs.
+
+**At 01:11 the comparison ran itself properly.** Two watchers existed simultaneously on
+the same machine, doing near-identical work — polling filesystem state on a 60-second
+loop — and differing in exactly one respect:
+
+| watcher | how it was started | outcome at 01:11 |
+|---|---|---|
+| dropped-trainer watch | agent-harness **background task** | **killed** by the harness |
+| guard/stray watch (§20.6) | `nohup ... & disown` from a foreground call | **alive**, ppid 1 |
+
+The training chain itself (`run_v2_pipeline.sh`, pid 3232, also an orphan at ppid 1) was
+**completely unaffected**: ten distinct trainer seeds still live, one launcher, matrix at
+**39.58%**, no gap in any `train_log.jsonl`. So the reap took precisely the one process
+started the wrong way and nothing else.
+
+**This is the cleanest available demonstration that the distinction is about process
+parentage and not about workload, timing or luck**, and it is recorded because §17.12's
+lesson is the single most load-bearing operational rule this project has: every
+multi-hour unattended run depends on it. The dropped-trainer watch was re-armed as an
+orphan (pid 9125); all three long-lived processes are now `ppid 1`.
+
+**The practical rule, sharpened:** an agent-harness background task is fine for something
+whose death costs only a missed notification, and is never acceptable for something whose
+death costs the run. When in doubt, orphan it — the cost is one `nohup ... & disown` and
+the loss of automatic notification, which is recoverable by writing to a file the session
+can poll.
+
+**A caveat this incident also exposes**, since it cuts the other way: an orphaned watcher
+produces **no notification when it fires**. Both watchers here therefore write to a file
+(`/tmp/gs_guardwatch.out`, `/tmp/gs_trainerwatch.out`) which has to be checked rather than
+awaited — and `/tmp` does not survive a reboot (§18.1). The orphan trade is
+survivability for observability, and for anything that must be *acted on* rather than
+merely survive, the right answer is both: an orphan doing the work and a cheap tracked
+task doing the notifying.
+
 ### 20.3 Analysis conventions, pinned so v2 is comparable to v1 line for line
 
 Several v1 figures are averages of averages, and **the order of the two averagings
