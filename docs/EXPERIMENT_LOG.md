@@ -2219,3 +2219,120 @@ artefact this entry rejects. It is also unattended automation that writes into t
 experiment's output directories with no one watching, which is the hazard class §9 and
 §17.12 are both about. The priority is a genuine v2 result, not infrastructure for its
 own sake.
+
+### 18.5 Verification that the restart lost nothing — measured, not argued
+
+§18.3's fifth point claimed the discarded prefix would regenerate bit-identically. That
+claim is now checked rather than trusted. The restarted runs' `train_log.jsonl` were
+compared against the preserved `checkpoints_v2_crashed/` logs, update-for-update, on the
+same seven float fields §14.14 and §17.8 used (`mean_reward`, `mean_extrinsic_reward`,
+`policy_loss`, `value_loss`, `entropy`, `total_loss`, `grad_norm`), with the `step`
+field asserted equal on every pair:
+
+**3,535 values compared across all ten seeds. 0 mismatches. Worst absolute difference
+0.0.**
+
+This is the **third** independent confirmation of §2's determinism property, and the
+strongest of the three: §14.14 compared a smoke run against a pilot within one machine
+generation, §17.8 compared the live matrix against the same pilot, and this one compares
+runs separated by **a power loss, a reboot, and a completely different process
+generation**. Determinism holds across all of it, which is what makes discarding a
+90%-complete batch a free operation rather than a costly one.
+
+### 18.6 Pre-flight for the baseline arm, which had never been run under the v2 flags
+
+The reservoir arm had a 30%-length pilot behind it (§14.14). **The baseline arm had
+never once been executed under `--grad-clip-mode per-group --embed-init-mode centered
+--embed-scale 3.0`** — it was gated behind the reservoir arm both times the matrix ran,
+so a flag-handling fault on that arm would have surfaced at the moment stage 2 launched,
+with nobody awake, after the reservoir arm's two hours were already spent.
+
+A 1,280-step run into a throwaway directory was therefore executed first. It writes a
+loadable checkpoint recording `grad_clip_mode='per-group'`, `embed_init_mode='centered'`,
+`embed_scale=3.0`; every log line carries the same; and the per-group norms show the
+**four** groups the baseline arm has (`embedding`, `gru`, `actor_head`, `critic_head`)
+against the reservoir arm's two — the group-count asymmetry `RESULTS.md` v1 §9 already
+discloses, here observed directly rather than inferred. Gradient norms are healthy
+(global 0.254, no group above 0.20). Throwaway deleted.
+
+## 19. Corrections of record found while the restarted matrix ran
+
+Appended beneath §18 rather than edited into the sections they correct, per the
+append-only rule. Both were found by executing the documented commands rather than
+reading them.
+
+### 19.1 §14.11's Step 5 aggregation command SILENTLY PRODUCES NO COMPARISON
+
+§14.11 Step 5 gives the statistics command as:
+
+```
+.venv/bin/python -m analysis.aggregate_results \
+  --results-dir results_v2 --checkpoint-dir checkpoints_v2
+```
+
+**Run exactly as written, this compares nothing.** `analysis/aggregate_results.py` reads
+evaluation JSONs from the directory it is handed, but `scripts/run_eval_matrix.py` writes
+them one level down, into `{results-dir}/{final,best,init}/` — which §7 of this ledger
+describes correctly and §14.11 then forgets. Pointed at the parent directory the
+aggregator finds zero eval files and prints:
+
+```
+--- regime=continuous: skipped (compare_arms: no eval results for arm(s)
+    ['reservoir', 'baseline'] ... Arms found: []) ---
+```
+
+for both regimes, and then prints a complete, healthy-looking training-log summary
+underneath. **That is the dangerous part: the output does not look like a failure.** It
+looks like a successful aggregation with two skipped lines, and the section that would
+have carried the headline is simply absent.
+
+**Verified against v1, both directions.** `--results-dir results` compares nothing;
+`--results-dir results/final` reproduces `RESULTS.md` v1 §3 digit-for-digit
+(reservoir 28.4169 ± 7.0593, baseline 36.1335 ± 3.4082, diff −7.7167, exact permutation
+p = 0.000996, Cohen's d = −1.3922, bootstrap CI [−12.7665, −3.5839]). `results/best` and
+`results/init` likewise reproduce the remaining four rows of that table exactly.
+
+**The corrected recipe needs THREE aggregator runs, not one**, because `final`, `best`
+and `init` are three separate evaluation passes written into three directories, and v1's
+six-row table is those three crossed with the two recurrent-state regimes each run
+already reports internally:
+
+```
+for sel in final best init; do
+  .venv/bin/python -m analysis.aggregate_results \
+    --results-dir "results_v2/$sel" --checkpoint-dir checkpoints_v2
+done
+```
+
+**`--selection` is not the flag that picks between them**, and reaching for it is the
+natural wrong guess. It only affects `--manifest` output (verified in `main`); the report
+is built from `--results-dir` and `--checkpoint-dir` alone. Passing `--selection best`
+while pointing at the parent directory changes nothing and still yields an empty
+comparison.
+
+Shipped as `scripts/run_v2_analysis.sh`, committed, with a guard that refuses to
+aggregate unless all 120 evaluation results are present.
+
+### 19.2 `timeout` does not exist on macOS either
+
+Added to §17.12's list of portability traps, which already records `setsid`. `timeout(1)`
+is GNU coreutils and is **not** present on a stock macOS; the shell reports
+`command not found: timeout` and, in a pipeline, the surrounding command may still appear
+to proceed. Use `gtimeout` if coreutils is installed, or simply omit it and bound the
+work by argument (e.g. `--steps 1280`) instead. Hit while writing §18.6's pre-flight.
+
+### 19.3 A running bash script MUST NOT be edited in place
+
+Recorded because it constrained this session's own remediation of §19.1. `bash` reads a
+script incrementally, seeking by byte offset as it executes, so editing a script that is
+currently running can make it resume at a shifted offset and execute garbage — a real
+hazard for exactly the long-lived chained pipelines this project keeps building
+(`scripts/run_v2_pipeline.sh` was mid-stage-1, blocked on a two-hour training launcher,
+when §19.1 was discovered).
+
+**The fix was therefore additive, not an edit:** the corrected aggregation shipped as a
+new file (`scripts/run_v2_analysis.sh`) while the running script was left untouched on
+disk. Its own stage 4 still runs the §14.11 command and still produces the empty
+comparison described above; that output is superseded by the analysis script's, and is
+harmless because every guard preceding it is unaffected. `run_v2_pipeline.sh` itself is
+corrected only once it is no longer executing.
