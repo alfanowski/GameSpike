@@ -88,9 +88,18 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
-from analysis.aggregate_results import build_eval_manifest
-
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Invoked two different ways: `python -m scripts.run_eval_matrix` (repo root
+# already on sys.path) and, per this project's own documented usage, directly
+# as `python scripts/run_eval_matrix.py` -- which makes Python put THIS
+# file's own directory (scripts/) on sys.path[0], not the repo root, so
+# `import analysis` would otherwise fail with ModuleNotFoundError regardless
+# of the current working directory. Inserted before the local import below
+# so both invocation styles resolve `analysis`/`training`/`envs` identically.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from analysis.aggregate_results import build_eval_manifest
 
 ARMS = ("baseline", "reservoir")
 SEEDS = tuple(range(10))
