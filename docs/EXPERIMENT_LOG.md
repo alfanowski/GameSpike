@@ -940,3 +940,63 @@ ablation with its own falsification condition beneath this entry, and a negative
 outcome will be reported as a negative outcome. The standing instruction on this
 project is that a negative result reported honestly is the deliverable; a positive
 result obtained by selection is not.
+
+### 14.7 Pre-registered: A8 — the structured-core route to the entanglement-entropy criticism
+
+Declared **before the construction is written and before any spectrum is
+computed**, for the same reason as §11: the commit timestamp is the evidence.
+
+§14.6 records why this ablation exists. A5 proved `spectral_radius` cannot move
+normalised entanglement entropy at all on this construction (it enters only as a
+global rescaling of every TT core, which cancels exactly in the normalised Schmidt
+spectrum). A6 found `tt_rank` moves it across only 0.96221-0.99596. §12's stated
+conclusion — **no construction that keeps i.i.d. Gaussian cores can reach the
+productive band S-bar in [0.1, 0.5]** — is a claim about i.i.d. Gaussian cores
+specifically, and it names its own escape route: structured cores. A8 is the test
+of that escape route, and it is the difference between "we could not fix (c) with
+the two knobs we happened to pre-register" and "we tried the construction our own
+analysis pointed at, and here is what happened."
+
+**Why a near-flat spectrum is the thing to attack.** S-bar is computed from the
+normalised Schmidt spectrum `p = sigma^2 / sum(sigma^2)` at the middle bond. A6
+measured that spectrum as near-flat (0.16881 … 0.09403 against 0.125 for a
+perfectly uniform 8-dimensional bond), which is what i.i.d. Gaussian cores
+generically produce, and a flat `p` is exactly what pins S-bar near 1. Lowering
+S-bar therefore requires a *decaying* Schmidt spectrum, which requires breaking the
+i.i.d. assumption along the bond index rather than rescaling it.
+
+- **H8a (tunability).** Introducing a geometric bond profile — scaling bond index
+  `r` of every TT core by `lambda^r` for a decay parameter `lambda` in (0, 1],
+  which reduces to the existing i.i.d. Gaussian construction exactly at
+  `lambda = 1.0` — makes normalised entanglement entropy tunable.
+  **Prediction:** over a sweep `lambda` in {1.0, 0.9, 0.7, 0.5, 0.3, 0.1}, three
+  reservoir seeds each, at fixed `tt_rank=8`, `tt_n_cores=4`, `reservoir_size=8192`,
+  S-bar spans an absolute range **of at least 0.3** and **enters the band
+  [0.1, 0.5] for at least one value of lambda**.
+  **Falsified if** the sweep's range is below 0.3, **or** if it never enters
+  [0.1, 0.5]. Either outcome means the structured-core route fails too, and
+  criticism (c) is then reported as unsolved by two independent constructions
+  rather than by one.
+- **H8b (the fix must not silently undo the other fix).** A construction that
+  buys a lower S-bar by destroying the reservoir's firing health is not a fix.
+  **Prediction:** at whichever `lambda` first lands S-bar inside [0.1, 0.5], the
+  silent-unit fraction on the committed `tests/data/real_obs_6000.npy` fixture,
+  under `--embed-init-mode centered --embed-scale 3.0`, stays **below 10%** and the
+  mean spike rate stays inside the documented healthy band (roughly 1-3%).
+  **Falsified if** silent fraction is at or above 10%, or the spike rate leaves
+  that band — in which case A8 is reported as "S-bar is movable, but not without
+  cost", with the trade-off quantified rather than hidden.
+- **Explicitly NOT claimed, whatever A8 returns.** A8 is a **construction**
+  diagnostic. It cannot say whether a less chaotic reservoir produces a better
+  agent, because that requires training runs A8 does not include. This is the exact
+  mistake §12 already recorded once: the A4-A6 falsification condition was written
+  as a conditional on task performance and became untestable when its antecedent
+  failed. **A8's falsification conditions are therefore stated purely over
+  construction quantities that A8 itself measures**, and any performance claim would
+  need its own pre-registered training ablation, not yet declared.
+- **Cost if wrong.** If H8a holds, this project has a genuinely new construction
+  knob and the sibling project's open question becomes testable for the first time
+  (it is currently OPEN in neither direction, per §12). If H8a is falsified, the
+  honest headline is that the reservoir's dynamical regime is not reachable by any
+  construction this project has been able to devise, which is a real and reportable
+  limitation of the architecture rather than of the experiment.
