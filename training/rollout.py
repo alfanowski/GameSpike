@@ -1,10 +1,17 @@
-"""Multi-process, random-policy rollout collection -- the throughput baseline.
+"""Rollout collection: a multi-process random-policy throughput baseline, and a
+single-process model-driven collector used by the actual training loop.
 
-Deliberately policy-agnostic: this module only ever samples uniform-random
-actions. Wiring a real (reservoir or GRU) policy in is Task 11's job, kept in a
-separate module so that a rollout-mechanics bug (e.g. a multiprocessing
-deadlock, a shape mismatch) and a model bug (e.g. a bad forward pass) are never
-debugged at the same time.
+The two paths are kept side by side, not merged:
+
+  * `collect_rollout_random_policy` is the throughput baseline (Task 10). It is
+    deliberately policy-agnostic -- uniform-random actions only -- so that a
+    rollout-mechanics bug (a multiprocessing deadlock, a shape mismatch) and a
+    model bug (a bad forward pass) are never debugged at the same time.
+  * `collect_rollout_with_model` (Task 11) drives a real policy, single-process.
+    Combining the process-per-env parallelism with a real model is explicitly
+    deferred: a model-driven multi-process collector needs either per-process
+    model replicas kept in sync with the learner or a batched action server, and
+    neither belongs in the task that first proves the learning loop works.
 
 One PyBoy instance per OS process (not thread): PyBoy wraps a C emulator core
 with its own mutable global-ish state per instance, so processes -- with their
@@ -13,8 +20,10 @@ own memory space -- are the safe unit of parallelism here, not threads.
 import multiprocessing as mp
 
 import numpy as np
+import torch
 
 from envs.mario_land_env import MarioLandEnv, OBS_DIM
+from training.novelty_gate import NoveltyGate
 
 
 def _worker(rom_path: str, n_steps: int, seed: int, conn):
@@ -69,3 +78,77 @@ def collect_rollout_random_policy(rom_path: str, n_envs: int, n_steps: int) -> d
     rewards = np.stack([r[2] for r in results])
     dones = np.stack([r[3] for r in results])
     return {"obs": obs, "actions": actions, "rewards": rewards, "dones": dones}
+
+
+def collect_rollout_with_model(env_ctor, model, model_state_fns, n_steps: int,
+                               novelty_gate: NoveltyGate, novelty_coef: float = 0.05) -> dict:
+    """Single-process rollout driven by a real policy-value model.
+
+    `model_state_fns = (init_state_fn, step_fn)` so this works for both
+    PolicyValueGRU and PolicyValueReservoir without depending on either
+    concretely: `init_state_fn(batch_size, device)` returns the model's initial
+    recurrent state as a TUPLE, and `step_fn(model, obs, state)` returns
+    `(logits, value, *next_state)` -- the trailing elements being whatever that
+    model threads forward (a GRU hidden state; the reservoir's mem/spk/window).
+
+    Episode boundaries reset BOTH the env and the model state, so no recurrent
+    state ever leaks across an episode.
+
+    The whole loop runs under `torch.no_grad()`: every value this function keeps
+    is turned into a Python float, so the PPO-relevant quantities are frozen
+    "old" values by construction, and building an autograd graph here would only
+    pin the entire rollout's activations in memory (the reservoir threads its
+    state forward, so the graph would span all n_steps).
+
+    Returns a dict with `obs`, `actions`, `rewards`, `dones`, `log_probs`,
+    `values` (each length n_steps), plus `last_value`: the bootstrap V(s_T) that
+    compute_gae wants as the (T+1)-th value -- the critic's own estimate of the
+    state the rollout stopped in, or exactly 0.0 when the final step ended the
+    episode (there is no future to bootstrap from). Reusing values[-1] as the
+    bootstrap instead, as a stand-in, would silently bias every truncated
+    rollout's last few advantages.
+    """
+    env = env_ctor()
+    init_state_fn, step_fn = model_state_fns
+    device = torch.device("cpu")
+    obs_buf, act_buf, rew_buf, done_buf, logp_buf, val_buf = [], [], [], [], [], []
+    try:
+        obs, _ = env.reset()
+        state = init_state_fn(1, device)
+        done = False
+        with torch.no_grad():
+            for _ in range(n_steps):
+                obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+                logits, value, *state = step_fn(model, obs_t, state)
+                dist = torch.distributions.Categorical(logits=logits)
+                action = dist.sample()
+                log_prob = dist.log_prob(action)
+                # The novelty signal summarises the policy's own reaction to the
+                # state (the logits vector), matching NoveltyGate's dim=n_actions.
+                # Score BEFORE push, so a state is never counted as its own
+                # nearest neighbour (which would drive every score to 0).
+                state_vec = logits.squeeze(0)
+                novelty = novelty_gate.score(state_vec)
+                novelty_gate.push(state_vec)
+                next_obs, reward, terminated, truncated, _ = env.step(int(action.item()))
+                done = bool(terminated or truncated)
+                obs_buf.append(obs)
+                act_buf.append(int(action.item()))
+                rew_buf.append(float(reward) + novelty_coef * novelty)
+                done_buf.append(float(done))
+                logp_buf.append(float(log_prob.item()))
+                val_buf.append(float(value.item()))
+                obs = next_obs
+                if done:
+                    obs, _ = env.reset()
+                    state = init_state_fn(1, device)
+            if done or n_steps == 0:
+                last_value = 0.0
+            else:
+                obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+                _, boot_value, *_ = step_fn(model, obs_t, state)
+                last_value = float(boot_value.item())
+    finally:
+        env.close()
+    return dict(obs=obs_buf, actions=act_buf, rewards=rew_buf, dones=done_buf,
+                log_probs=logp_buf, values=val_buf, last_value=last_value)
