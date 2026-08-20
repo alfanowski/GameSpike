@@ -771,3 +771,172 @@ against `main`** instead of direct pushes. Convention:
 
 `gh` is authenticated as `alfanowski` with `repo` scope, so a future session
 can use `gh pr create` directly rather than setting up auth from scratch.
+
+---
+
+## 14. Session handover, 2026-08-20 ~20:10 CEST — and what is on disk that §13 does not mention
+
+Recorded at the start of a new orchestrator session, before any new measurement,
+because the previous session ended without writing a closing entry and the gap
+between "what the docs say" and "what is on disk" is itself a finding.
+
+### 14.1 What happened to the previous session
+
+The orchestrator session that produced everything up to §13 stopped writing at
+**17:55:38 CEST** (last file write: `checkpoints/reservoir_seed1_clipemb/step_300032.pt`).
+At 20:05 CEST the following was verified directly rather than assumed:
+
+- zero training processes running (`ps aux`, no `python`/`train.py`/`pyboy` matches);
+- no file write anywhere in the repository since 17:55:38;
+- no commit on `main` since `133e09e` (17:26 CEST).
+
+The working hypothesis for the stop is an unattended permission/approval prompt with
+nobody present to answer it. **It is a hypothesis, not a diagnosis** — no log of that
+session is available from inside the repository, which is exactly why this ledger
+exists and why this entry is being written before any new work.
+
+**Collision protocol adopted, in case that session ever resumes.** Before any write
+to `checkpoints/` or `results/`, re-verify that no process other than this session's
+is writing there. If one appears, do not share a path with it — use a distinct
+directory name and record the collision here. This entry is the record that the
+check was performed and was clean at 20:05.
+
+### 14.2 Undocumented data on disk: the pilot ran 5.5x further than §6.4 of `RESULTS.md` reports
+
+`docs/RESULTS.md` §6.4 describes the corrected-configuration pilot as **3 seeds at
+425 PPO updates (54,400 env steps, 5.4% of a full run)** and labels it, correctly,
+as not a result. That description was accurate when written. **It is now stale:**
+the pilot kept running and reached **update 2344 = step 300,032 = 30.0% of a full
+1,000,064-step run**, across **nine** run directories, not three:
+
+| directory pattern | `--grad-clip-mode` | `--embed-init-mode` | `--embed-scale` |
+|---|---|---|---|
+| `checkpoints/reservoir_seed{0,1,2}_clip/` | `per-group` | `legacy` | 1.0 |
+| `checkpoints/reservoir_seed{0,1,2}_emb/` | `global` | `centered` | 3.0 |
+| `checkpoints/reservoir_seed{0,1,2}_clipemb/` | `per-group` | `centered` | 3.0 |
+
+Each holds `train_log.jsonl` (2,344 lines) and checkpoints at `step_100096.pt`,
+`step_200192.pt`, `step_300032.pt`. Config fields are recorded in every JSONL line,
+so the table above is read off the data, not inferred from the directory name.
+
+Two consequences, both stated so they are not re-derived later:
+
+1. **This is a 2x2 factorial, not a one-armed pilot.** The fourth cell
+   (`global` + `legacy`) is the v1 condition and is already on disk at
+   `checkpoints/reservoir_seed{0..9}/`. Comparisons must be made at **matched update
+   index** (update 2344) from the JSONL rather than at matched checkpoint filename,
+   because the pilot's checkpoint boundaries (`step_300032`) and v1's
+   (`step_300288`) do not coincide.
+2. **`RESULTS.md` §6.4's "425 updates / 5.4%" figures are left standing** per the
+   append-only rule. They are not wrong about what they measured; they are an
+   incomplete description of what the pilot eventually produced. The correction of
+   record is this subsection.
+
+### 14.3 The instability that has to be cleared before the full matrix is launched
+
+`checkpoints/reservoir_seed1_clipemb/train_log.jsonl` shows, on three consecutive
+updates near the end of the pilot, `grad_norm_groups.embedding` moving
+**474,381 -> 74,508,156,928 -> 3,571,024,640**. That field is the **pre-clip** norm,
+so this is the §6.2 explosion still present under the configuration intended to
+correct for it. The readout group's norm on those same lines stayed at roughly
+10-25, which is consistent with per-group clipping doing its job — **but consistent
+with is not the same as verified**, and committing 20 full-length runs (~4.5 h of
+this machine) to a configuration whose containment has not been checked would be
+exactly the kind of unforced error this ledger exists to prevent.
+
+A blocking go/no-go diagnostic is therefore being run first, on data already on
+disk, with no new training. Its hypotheses are pre-registered in §14.4 below.
+
+### 14.4 Pre-registered: the go/no-go diagnostic (declared before measurement)
+
+Same rule as §11: **reported regardless of outcome**, wrong statements stay on the
+page with corrections beneath them.
+
+- **H14a — the embedding fix survives training.** The centred initialisation's
+  silent-unit suppression is not merely an initialisation property; the *trained*
+  embedding at step 300,032 still yields a healthy reservoir.
+  **Falsified if** the mean silent-unit fraction over seeds 0-2, measured on the
+  committed `tests/data/real_obs_6000.npy` fixture using the trained `embedding`
+  weights from `reservoir_seed{s}_clipemb/step_300032.pt`, **exceeds 15%**.
+  This is the open question §12's limitations list explicitly declined to claim
+  ("the bias is trainable, and whether it adapts was NOT verified"); the pilot
+  checkpoints are the first data able to answer it.
+- **H14b — per-group clipping contains the explosion.** The readout's effective
+  optimizer step stays in a healthy range despite the embedding's exploding
+  pre-clip norm.
+  **Falsified if** the readout's median `|m_hat| / sqrt(v_hat)` (or, if
+  reconstructible, median `||dp||/||p||` for one Adam step) under `clipemb` is
+  **below 1e-4** — i.e. still within an order of magnitude of v1's frozen-readout
+  pathology (1.9034e-05) rather than near the healthy baseline GRU (1.346e-01 /
+  4.273e-04 respectively for the two statistics).
+- **H14c — the 2x2 factorial is descriptive only.** Mean `mean_extrinsic_reward`
+  over updates 1876-2344 for each of the four cells, three seeds each, reported
+  per seed. **No p-value will be computed and no arm claim will be made from it**:
+  three seeds at 30% of a run is below this project's own stated bar (§2), and
+  saying so in advance is the point of writing it down here.
+
+**Decision rule, fixed in advance:** the full 10-seed x 2-arm matrix is launched
+under `--grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0`
+**only if H14a and H14b both survive**. If either is falsified, the matrix is not
+launched on that configuration and the reason is recorded here before anything
+else is run.
+
+### 14.5 Pre-registered: A7 — does the corrected input also fix the dead-gradient budget?
+
+Declared **before the v2 runs exist**, which is the only moment at which declaring
+it is worth anything.
+
+§12/A4a established two things that together make a sharp prediction: every
+dead-gradient `in_proj` column belongs to a unit that never fires
+(`dead \ silent = 0`, no exceptions), and the dead set only ever shrinks
+(`dead(t+1) ⊂ dead(t)`, `newly_dead = 0` at all 9 transitions of `reservoir_seed0`).
+If silence is the *cause* of deadness, then an initialisation that removes most of
+the silence should remove most of the deadness.
+
+- **H7 (prediction).** Under `--embed-init-mode centered --embed-scale 3.0`, the
+  dead-gradient `in_proj` column count at step 1,000,064, averaged over the ten v2
+  reservoir seeds, is **below 2% of 8192 (i.e. fewer than ~164 columns)**, against
+  the v1 measured value of **865 columns (10.5591%, 9.9440% of the trainable
+  budget)** at the same step.
+- **Falsified if** that mean is **at or above 5% of 8192 (~410 columns)** — a
+  result which would mean silence is a *marker* of deadness rather than its cause,
+  and that some second mechanism strands columns without gradient.
+- **Ambiguous band, declared in advance so it cannot be spun either way:** a mean
+  between 2% and 5% confirms the direction while falsifying the magnitude, and will
+  be reported in exactly those words.
+- **Test:** same procedure as A4a — Adam `exp_avg_sq` exactly 0 over dim 1 of
+  `in_proj.weight`, read from the final checkpoint's stored optimizer state. Also
+  report the per-seed spread, not only the mean, and the nesting property
+  (`newly_dead = 0`) which should hold or fail independently of the magnitude.
+- **Cost if wrong.** If H7 is falsified, the "one root cause" framing §11 advanced
+  and §12/A4a already partially retracted is wrong a second time, and the honest
+  conclusion becomes that the dead-parameter criticism is **not** solved by the
+  input fix and remains an open structural defect of the architecture. That
+  sentence will be written if that is what the numbers say.
+
+### 14.6 The third architectural criticism is NOT expected to be solved, and that is stated up front
+
+The three standing architectural criticisms of this design are (a) structurally
+silent units, (b) a chunk of the trainable budget that never receives gradient,
+(c) entanglement entropy indicating deep chaos in the reservoir dynamics.
+
+- **(a) has a root cause and a fix** (§12, root-cause subsection); whether the fix
+  survives training is H14a and whether it survives at task scale is v2.
+- **(b) has a prediction under test** (H7 above), not yet an answer.
+- **(c) is, on the present evidence, not fixable by any knob this construction
+  exposes.** A5 proved `spectral_radius` enters only as a global rescaling of all
+  TT cores, which cancels exactly in the normalised Schmidt spectrum (changing all
+  cores by 1000x moves S-bar by 2.8e-11); A6 found `tt_rank` spans only
+  0.96221-0.99596 with no order-to-chaos transition, because i.i.d. Gaussian cores
+  generically produce a near-flat Schmidt spectrum. The conclusion recorded in §12
+  — **no construction that keeps i.i.d. Gaussian cores can reach the productive
+  band S-bar in [0.1, 0.5]** — stands, and it names the only remaining route:
+  structured (correlated, or low-rank-biased) cores, which is a different
+  construction rather than a setting on this one.
+
+**This session does not expect to solve (c), and says so before trying.** If a
+structured-core construction is attempted, it will be pre-registered as its own
+ablation with its own falsification condition beneath this entry, and a negative
+outcome will be reported as a negative outcome. The standing instruction on this
+project is that a negative result reported honestly is the deliverable; a positive
+result obtained by selection is not.
