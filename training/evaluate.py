@@ -53,6 +53,31 @@ Two smaller lifetime rules, both per-episode:
 the loss optimised (extrinsic + novelty subsidy) and is reported for diagnosis
 only -- per training/train.py's own note, curiosity is an exploration subsidy,
 not a score, and must never be what the arms are ranked on.
+
+WHAT THIS HARNESS CANNOT TELL YOU. Read this before quoting any number it prints
+as the answer to design doc §5, because the spread it reports is narrower than
+the spread that actually matters:
+
+  * THE REPORTED SPREAD IS POLICY-SAMPLING VARIANCE, AND NOTHING ELSE. The
+    emulator, the boot sequence and `reset()` are all deterministic, and every
+    episode starts from a bit-identical state, so the only thing that differs
+    between episodes is which actions the policy happened to draw. There is no
+    environment variance, no start-state variance, no opponent variance -- none
+    of it exists in this setup, so none of it is in the error bars.
+  * IT SAYS NOTHING ABOUT TRAINING-RUN VARIANCE, WHICH IN DEEP RL USUALLY
+    DOMINATES. Every number here comes from ONE checkpoint, i.e. one weight
+    init and one rollout ordering. Two identically-configured training runs of
+    the same arm routinely land far apart -- further apart than the two arms'
+    means will differ. Evaluating a single checkpoint per arm cannot separate
+    "this architecture is better" from "this particular run got lucky", however
+    many episodes it averages over, because more episodes shrink the wrong error
+    bar.
+  * SO A REAL ARM COMPARISON NEEDS SEVERAL INDEPENDENTLY-TRAINED CHECKPOINTS PER
+    ARM (several training seeds), each evaluated here, with the arms compared
+    ACROSS training seeds -- not one checkpoint per arm evaluated over many
+    episodes. This module is the per-checkpoint instrument for that experiment,
+    not the experiment. Running it twice, once per arm, produces a comparison
+    that looks publishable and is not.
 """
 import argparse
 import json
@@ -67,8 +92,24 @@ from training.train import build_model, load_checkpoint
 
 DEVICE = torch.device("cpu")
 
-# Same buffer geometry as the training loop's gate, so the combined return
-# reported here is measured on the same scale as the one that was optimised.
+# Same buffer GEOMETRY as the training loop's gate. NOT the same scale: training
+# runs one gate for the whole run, so its buffer is permanently warm, while this
+# harness starts every episode with an empty one (see the per-episode rationale
+# above -- a shared gate across identical restarts would measure "have I replayed
+# this level before", which is worse). A cold buffer scores higher, because early
+# steps have few stored neighbours to be close to: measured on a 200-step episode,
+# the first 8 steps average 0.545 novelty against 0.141 for the last 8. Re-scoring
+# that same trajectory against a buffer already holding it inflates the total
+# subsidy by +174% at 200 steps and +14.8% at 1000 -- i.e. the distortion is
+# severe on short evaluation episodes and fades as they lengthen. The defined
+# maximal 1.0 of the very first step is NOT the main term (2.4% of a 200-step
+# episode's subsidy, 0.8% of a 1000-step one); the warm-up window is.
+#
+# Consequence: `mean_combined_return` is comparable ACROSS ARMS (both are scored
+# by this identical procedure) and comparable across episodes of equal length, but
+# it is NOT on the same scale as the reward the training loss actually optimised,
+# and it inflates as `max_steps_per_episode` shrinks. `mean_extrinsic_return` --
+# the scoreboard -- is untouched by any of this.
 NOVELTY_CAPACITY = 512
 NOVELTY_K = 8
 
@@ -178,6 +219,15 @@ def _format(results: dict) -> str:
         )
         lines.append(f"  {'per episode':36s} "
                      f"{[round(v, 3) for v in results[name + 's']]}")
+    # Printed with the numbers, not buried in a docstring: this caveat is the
+    # difference between a result and a press release. See the module docstring's
+    # "WHAT THIS HARNESS CANNOT TELL YOU".
+    lines.append("  NOTE: one checkpoint, deterministic env -- this spread is "
+                 "POLICY-SAMPLING variance only.")
+    lines.append("        It is not training-seed variance, which usually dominates. "
+                 "Comparing the two arms")
+    lines.append("        needs several independently-trained checkpoints per arm, "
+                 "compared across those seeds.")
     return "\n".join(lines)
 
 
