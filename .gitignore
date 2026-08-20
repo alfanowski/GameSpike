@@ -6,6 +6,9 @@ __pycache__/
 checkpoints/**/*.pt
 checkpoints/**/*.json
 checkpoints/**/*.jsonl
+# checkpoints_init/ holds the untrained (--steps 0) reference checkpoints used as the
+# experimental control -- regenerable from a fixed seed, so not worth distributing.
+checkpoints_init/
 *.gb
 *.gbc
 .pytest_cache/
