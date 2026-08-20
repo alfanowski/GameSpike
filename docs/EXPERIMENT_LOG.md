@@ -1000,3 +1000,103 @@ i.i.d. assumption along the bond index rather than rescaling it.
   honest headline is that the reservoir's dynamical regime is not reachable by any
   construction this project has been able to devise, which is a real and reportable
   limitation of the architecture rather than of the experiment.
+
+### 14.8 Correction of record: `RESULTS.md` §12's v2 recipe is incomplete in a way that would have reproduced a DISCONFIRMED configuration
+
+`docs/RESULTS.md` §12 ("What v2 will add") specifies the corrected runs as
+*"full-length runs under `--grad-clip-mode per-group` and `--embed-init-mode
+centered`, applied identically to both arms"*. **It does not mention
+`--embed-scale`, whose default is 1.0.**
+
+Followed literally, that recipe launches the configuration §12 of this ledger
+already measured and rejected:
+
+| configuration | silent fraction (8-seed mean) | mean spike rate |
+|---|---|---|
+| `legacy`, scale 1.0 (the v1 condition) | 45.5917% | 0.022551 |
+| **`centered`, scale 1.0 (what §12's recipe literally specifies)** | **65.9454%** | **0.000474** |
+| `centered`, scale 3.0 (the actual validated fix) | **2.0523%** | 0.018482 |
+
+`centered` at scale 1.0 is not a weaker version of the fix — **it is worse than
+doing nothing**, because centring removes the DC drive without replacing it and
+starves the reservoir. This ledger's §12 states it plainly ("**the bias and the
+gain are only a fix together**, which is why both knobs shipped"); `RESULTS.md`
+§12 simply omits the second half.
+
+**Resolution, and the evidence for it.** The nine pilot runs on disk record their
+own configuration in every JSONL line, and the `clipemb` runs read
+`"embed_init_mode": "centered", "embed_scale": 3.0`. So the previous session did
+in fact run the validated pairing; only the write-up is incomplete. **v2 is
+launched at `--embed-init-mode centered --embed-scale 3.0`**, and `RESULTS.md`
+§12's sentence is corrected here rather than edited there, per the append-only
+rule. The v2 section of `RESULTS.md` will state both knobs explicitly.
+
+This is recorded at this weight because it is the exact failure mode a
+reproduction attempt hits: a reader following the published recipe would have got
+a starved reservoir, measured a worse-than-v1 result, and had no way to know the
+recipe was missing a term.
+
+### 14.9 Output layout for v2, and why it needs no code change
+
+`scripts/run_eval_matrix.py` and `analysis/aggregate_results.py` have **no
+`run_tag` support at all** (verified: zero occurrences of `run_tag`/`run-tag` in
+either file or their tests). Three places hardcode the untagged shape:
+
+- `analysis/aggregate_results.py:478` — `_CHECKPOINT_DIRNAME_RE` is anchored
+  `^(?P<arm>[A-Za-z0-9]+)_seed(?P<seed>\d+)$`; a `_v2` suffix matches nothing, and
+  the `[A-Za-z0-9]+` arm group cannot contain an underscore either.
+- `analysis/aggregate_results.py:988` — `build_eval_manifest` composes
+  `os.path.join(checkpoint_dir, f"{arm}_seed{seed}")` with no tag parameter.
+- `scripts/run_eval_matrix.py:190` — `resolve_init_checkpoints` composes the same
+  shape for `step_0.pt`.
+
+Evaluation output filenames (`eval_{arm}_seed{seed}_{regime}.json`) are equally
+tag-free, so v2 results written into `results/` would also **collide with v1's
+files** rather than sit beside them.
+
+**Decision: put the version coordinate in the PARENT directory, not in the run
+directory name.** Every v2 run directory is then still named exactly
+`{arm}_seed{n}`, every existing regex matches unchanged, and no code that the v1
+results depend on for their reproducibility is touched:
+
+| | v1 (untouched) | v2 |
+|---|---|---|
+| trained runs | `checkpoints/{arm}_seed{n}/` | `checkpoints_v2/{arm}_seed{n}/` |
+| untrained controls | `checkpoints_init/{arm}_seed{n}/` | `checkpoints_v2_init/{arm}_seed{n}/` |
+| evaluation output | `results/{sel}/` | `results_v2/{sel}/` |
+
+`--run-tag` is deliberately NOT used for v2. It remains the right tool for a
+one-off diagnostic re-run that never needs to reach the analysis path (which is
+exactly what the nine pilot runs are), and the wrong tool for a full matrix that
+does.
+
+**Consequence that must not be forgotten: v2 needs its own untrained controls.**
+`RESULTS.md` §2.3's `init` selection and §4.1's "the untrained arms are
+statistically indistinguishable" control both rest on `--steps 0` checkpoints.
+The existing ones in `checkpoints_init/` were built under the **legacy**
+embedding init. Since the centred init is applied at construction time, a v2
+comparison scored against legacy-init controls would be comparing against the
+wrong control. Twenty fresh `--steps 0` runs are therefore part of the v2 matrix,
+not an afterthought.
+
+### 14.10 Launch-readiness verification (measured, 2026-08-20 ~20:20 CEST)
+
+- **Test suite: 224 passed, 0 failed** (16.4s) with
+  `MARIO_LAND_ROM_PATH="/Users/alfanowski/Desktop/Super Mario Land (World).gb"`
+  set. Without it, 130 passed / 94 skipped — the ROM-dependent tests skip
+  silently, so **a run that reports 130 passed has not actually exercised the
+  environment**. §1 of this ledger records 169 as the count at commit `990c5a1`;
+  224 is the current figure.
+- **ROM verified present** at `/Users/alfanowski/Desktop/Super Mario Land (World).gb`,
+  65,536 bytes.
+- **Disk**: 148 GiB free. Measured per-run footprint is 18.41 MB (baseline) and
+  30.70 MB (reservoir) including `train_log.jsonl`, so the 20 v2 runs cost ~491 MB.
+  Not a constraint.
+- **Memory is the one unverified risk.** No document in this repository records a
+  per-process RSS for a PyBoy + torch training process, and the machine has 16 GB.
+  Ten concurrent processes were run successfully during v1, so the configuration is
+  empirically known to fit, but it was never measured. It is measured during the v2
+  launch and recorded below rather than assumed.
+- **No committed training launcher existed.** v1's parallelism was ad hoc, which is
+  the direct cause of the §9 hazards. `scripts/run_training_matrix.py` is being
+  written with tests for v2 so this is reproducible rather than remembered.

@@ -16,3 +16,15 @@ checkpoints_init/
 
 # Worktree metadata created by the agent harness, not project source.
 .claude/worktrees/
+
+# v2 (corrected) matrix. A SEPARATE --checkpoint-dir rather than --run-tag: the
+# analysis path matches run directories with `^(?P<arm>[A-Za-z0-9]+)_seed(\d+)$`
+# (analysis/aggregate_results.py) and eval outputs with an equally strict
+# `eval_{arm}_seed{n}_{regime}.json`, so a `_v2` SUFFIX on the run directory would
+# silently match nothing. Putting the tag in the PARENT directory keeps every run
+# directory named exactly `{arm}_seed{n}` and needs no change to code that the v1
+# results depend on for their reproducibility.
+checkpoints_v2/**/*.pt
+checkpoints_v2/**/*.json
+checkpoints_v2/**/*.jsonl
+checkpoints_v2_init/
