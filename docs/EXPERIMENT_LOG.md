@@ -1306,3 +1306,212 @@ forbids. **And it would buy nothing:** the ten runs execute in parallel and the 
 finishes when its slowest member does, so three seeds starting at 30% shortens the
 batch by approximately zero. Fresh runs are both cleaner and free. The pilot's value
 is as a diagnostic, which is how it is used.
+
+## 15. Go/no-go diagnostic RESULTS — one hypothesis confirmed, one falsified, and a pre-registered decision rule that was wrong
+
+Appended beneath §14, never edited into it. `analysis/pilot_diagnostics.py` is the
+re-runnable artefact; it was verified to produce byte-identical output across three
+independent runs, it trains nothing, and it writes nothing.
+
+**Headline, stated before the reasoning: H14a is FALSIFIED. The centred embedding
+initialisation does not survive training.** It is reported first because it is the
+uncomfortable half.
+
+### 15.1 H14a — FALSIFIED (22.3877% against a 15% threshold)
+
+Silent-unit fraction on the committed 6,000-step fixture, using the **trained**
+embedding from each `reservoir_seed{s}_clipemb` checkpoint:
+
+| stage | seed 0 | seed 1 | seed 2 | mean |
+|---|---|---|---|---|
+| init | 1.6602% | 1.8188% | 1.9531% | 1.8107% |
+| step 100,096 | 4.7607% | 6.4087% | 4.7852% | 5.3182% |
+| step 200,192 | 17.6147% | 20.1538% | 14.0381% | 17.2689% |
+| **step 300,032** | **26.9165%** | **19.2749%** | **20.9717%** | **22.3877%** |
+
+Zero saturated units at every stage. For reference at the same step: `emb` (global
+clipping + centred) 22.6156%, `clip` (per-group + legacy) 45.8822%.
+
+**The mechanism is measured, not inferred.** The centring identity is
+`b = -(W @ mu)`. It decays because **`W` drifts and `b` does not follow it**. On
+seed 0: `||W@mu + b||` goes 0.0000 -> 0.1690 -> 0.5350 -> 0.8945 while `||b||`
+barely moves (0.9390 -> 0.9243) and `||W@mu||` grows (0.9390 -> 1.2129). The
+fraction of the centring that has decayed reaches **0.737 by 30% of a run**. The
+induced frozen membrane-offset std goes **0 -> 0.50 -> 1.60 -> 2.68** against a
+firing threshold of 1.0. The informative AC drive is essentially flat over the same
+window (0.0900 -> 0.0941, +4.6%), so **the drift is almost purely DC
+re-accumulation** — the exact defect the centring was built to remove, growing back.
+
+**This answers, negatively, the open question §12 recorded verbatim** ("The bias is
+trainable, and whether it adapts was NOT verified"). It does not adapt. It decays.
+
+### 15.2 H14b — CONFIRMED, decisively (3.6085e-04 against a 1e-4 threshold)
+
+Measured from the **exact last real optimizer step** of each run rather than a
+proxy: a checkpoint stores `exp_avg`, `exp_avg_sq` and the step count as of
+immediately after the last `optimizer.step()`, and Adam's update is a closed form in
+those three, so the step actually taken on the actual clipped gradient is
+reconstructible with no ROM, no rollout and no synthetic gradient. This is stronger
+evidence than the counterfactual §6.2 of `RESULTS.md` used, not weaker.
+
+Readout median `||dp||/||p||`:
+
+| condition | seed 0 | seed 1 | seed 2 |
+|---|---|---|---|
+| **v2 `clipemb` readout** | **2.6308e-04** | **4.6390e-04** | **3.5556e-04** |
+| v1 `global` readout (the pathology) | 4.5535e-06 | 2.2807e-06 | 2.0369e-07 |
+| baseline GRU, non-embedding (healthy reference) | 5.5672e-04 | 5.9212e-04 | 7.5568e-04 |
+
+**The corrected readout now sits inside the healthy GRU's own band**, having been
+one and a half to three orders of magnitude below it under the global rule.
+
+The reason, and it is the crisp one: **Adam tolerates a small steady rescaling and
+not a swinging one** (§6.2 of `RESULTS.md`). The clip coefficient the readout
+actually receives, over all 2,344 updates:
+
+| rule | median coefficient | max/median |
+|---|---|---|
+| per-group | 8.40e-02 – 1.03e-01 | **9.7 – 11.9** |
+| global (v1) | 1.47e-09 – 6.50e-09 | **7.3e+05 – 1.15e+06** |
+
+Five orders of magnitude of stabilisation on the coefficient's swing.
+
+**The embedding gradient is still exploding, and it no longer matters.** Over the
+last 500 updates the embedding group's pre-clip norm has median 7.0e8–1.6e9 and max
+up to 1.3e11 — the `74,508,156,928` that triggered this whole diagnostic is roughly
+the p95 of its own run's distribution, i.e. typical rather than anomalous. The
+readout group's own norm over the same window has median 8–10 and p95 ~20. **Per-group
+clipping is doing exactly the job it was added to do.**
+
+**Zero NaN and zero Inf anywhere** — 9 log files across 7 numeric fields plus both
+group norms, and 9 checkpoints scanned tensor-by-tensor across model and full Adam
+state. **The frozen-reservoir invariant holds bit-for-bit**: each reservoir rebuilt
+from its seed and diffed against the stored buffers across 27 checkpoint loads gives
+max absolute difference **0.0e+00** in all 27.
+
+### 15.3 H14c — the 2x2 factorial, descriptive only
+
+Mean `mean_extrinsic_reward` over updates 1876–2344, three seeds:
+
+| cell | seed 0 | seed 1 | seed 2 | mean | sd |
+|---|---|---|---|---|---|
+| global + legacy (v1) | 0.014272 | 0.011474 | 0.017130 | 0.014292 | 0.002828 |
+| per-group + legacy (`clip`) | 0.071081 | 0.090592 | 0.067127 | 0.076267 | 0.012563 |
+| global + centred (`emb`) | 0.017010 | 0.021098 | 0.022393 | 0.020167 | 0.002810 |
+| **per-group + centred (`clipemb`)** | 0.070813 | 0.093462 | 0.072721 | **0.078998** | 0.012562 |
+| *baseline GRU (v1), same window* | 0.114712 | 0.114499 | 0.099339 | *0.109517* | 0.008815 |
+
+Clipping alone **+0.061975**; centring alone **+0.005875**; both **+0.064706**
+against an additive prediction of +0.067850, i.e. an interaction of **-0.003143**
+that is **smaller than the seed standard deviation (0.0126) and therefore not
+interpretable**. Per-group clipping carries roughly 96% of the combined effect.
+
+**No p-value is computed and no arm claim is made.** Three seeds at 30% of a run is
+below this project's own bar (§2), which is why H14c was registered as descriptive.
+Recorded plainly: at this point the corrected reservoir arm is still **~28% below**
+the baseline GRU reference, and its last-500-update trend is **flat** (OLS slopes
+-1.27e-05, -7.88e-08, +1.45e-05 per update on a level of ~0.079), not rising.
+
+### 15.4 The pre-registered decision rule was WRONG, and this says so before acting on it
+
+§14.4 fixed this rule in advance: *"the full matrix is launched … **only if H14a and
+H14b both survive**. If either is falsified, the matrix is not launched on that
+configuration and the reason is recorded here before anything else is run."*
+
+**H14a is falsified. Read literally, that rule forbids the launch.** It is being
+overridden, and the override is written down here, with its reasoning, **before the
+matrix is launched** — not discovered afterwards as a justification.
+
+**Why the rule was badly formulated.** It gated on two hypotheses that answer
+different questions and carry different consequences:
+
+- **H14b asks whether the experiment is VALID** — whether the corrected protocol
+  actually removes the optimizer/clipping confound that made v1 uninterpretable.
+  Had H14b failed, launching would have produced another confounded comparison and
+  the rule would have been right to stop it. **H14b survived.**
+- **H14a asks whether one of the two treatments is as EFFECTIVE as advertised.**
+  Its falsification does not confound anything. The centred init is still applied
+  **identically to both arms**, so it remains a valid control; it is simply a
+  weaker treatment than §12 implied. A weaker-than-hoped treatment is a *result to
+  report*, not a defect that invalidates a comparison.
+
+Treating those two as interchangeable gates was the error. This is the same class of
+mistake §12 already recorded once — *"a pre-registration that only produces a verdict
+when its manipulation succeeds is not a complete pre-registration"* — and it is
+logged here in the same spirit rather than quietly dropped.
+
+**The corrected rule, stated explicitly:** *launch only if the validity hypothesis
+(H14b) survives; a falsified efficacy hypothesis (H14a) is reported, not treated as
+a launch gate.*
+
+**Why the alternatives are worse, which is the substantive argument.**
+
+- **Launching on `legacy` instead** would commit the headline comparison to a
+  configuration with a known, diagnosed, *unfixed* defect — **45.8822% of the
+  reservoir silent** against 22.3877% — in order to avoid a fix that turns out to be
+  merely weaker than advertised. On every measured outcome centred is at least as
+  good as legacy: silent fraction 22.39% vs 45.88%, reward 0.0790 vs 0.0763, zero
+  saturated units in both. That trade is strictly negative.
+- **Adding a drift-suppression knob now** (bias re-centring, per-group learning
+  rates, a tighter embedding clip) would put an **unpiloted** mechanism inside the
+  headline run. That is the highest-risk option of the three and it would need its
+  own pre-registration and its own pilot.
+- **Not launching at all** leaves `DESIGN.md` §5 answered only by a comparison whose
+  own write-up says it cannot separate the architectural question from an optimizer
+  artefact.
+
+**Binding constraint on the write-up, recorded now so it cannot be softened later:
+`RESULTS.md` v2 may NOT claim that the centred initialisation keeps the reservoir
+healthy.** The defensible claim, and the only one, is: *centring holds the reservoir
+near-fully active for roughly the first 100k steps and roughly halves the silent
+fraction at 300k, after which the invariant decays because the trainable weight
+drifts and the bias does not follow it.*
+
+### 15.5 The finding neither fix addresses — the embedding drifts without bound
+
+Not pre-registered, found while measuring H14a, and reported at this weight because
+it is measured over a **complete** v1 run rather than extrapolated. Across all ten
+checkpoints of `reservoir_seed0` (1,000,064 steps, `legacy` + `global`):
+
+| quantity | step 100,096 | step 1,000,064 |
+|---|---|---|
+| `\|\|W\|\|` | 1.0490 | 1.6709 |
+| `\|\|W@mu + b\|\|` (residual DC) | 0.3130 | 1.8594 (6x) |
+| membrane-offset std | 0.9436 | **5.6270** |
+| mean spike rate | 0.018749 | **0.200348** |
+
+**The spike rate ends at 10x the ~2% band `models/spiking_reservoir.py` documents as
+healthy**, and saturated units appear from step 600,576 onward, reaching 1.3428%.
+Under `legacy` the silent set stays pinned near 46% (consistent with A4a's nesting
+result) and the drift surfaces as runaway *firing* instead of silence.
+
+**Neither shipped fix controls the reservoir's operating point over a full run.**
+Per-group clipping fixes the optimizer pathology; centring fixes the *initial*
+operating point. Nothing in the current design regulates where the operating point
+goes after that. This is the successor question to A4, it is stated here as an open
+problem rather than a solved one, and A9 below turns it from extrapolation into
+measurement.
+
+### 15.6 Pre-registered: A9 — where does the reservoir's operating point actually end up?
+
+Declared **before the v2 matrix is launched**, so the endpoint is measured rather
+than argued about afterwards. Cost is trivial (~1.4 s per checkpoint, ~5 minutes for
+the whole matrix), which is why there is no excuse for extrapolating instead.
+
+- **Measurement.** For every checkpoint of every v2 reservoir run (10 seeds x 10
+  checkpoints), compute on the committed fixture: silent-unit fraction, saturated
+  fraction, mean spike rate, `||W||`, residual DC `||W@mu + b||`, and membrane-offset
+  std. Report the full trajectory, per seed, not just the endpoint.
+- **H9 (prediction).** The centred init's advantage over legacy **shrinks but does
+  not vanish** by step 1,000,064: mean silent-unit fraction over the ten v2 reservoir
+  seeds at the final checkpoint is **below 40%**, against legacy's measured ~46%.
+- **Falsified if** that mean is **at or above 46%**, i.e. the centred runs converge
+  to the legacy operating point or worse — which would mean centring buys a
+  healthier first third of a run and nothing at the end of it, and that the honest
+  summary of the embedding fix is "transient".
+- **Ambiguous band, declared in advance:** a mean between 40% and 46% confirms the
+  direction while falsifying the magnitude, and will be reported in those words.
+- **Explicitly not claimed:** A9 measures construction health, not task performance.
+  Whether a healthier reservoir produces a better agent is what the v2 arm comparison
+  measures, and A9 may not be substituted for it. (§12 records what happens when a
+  falsification condition is written as a conditional on task performance.)
