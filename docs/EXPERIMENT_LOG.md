@@ -2468,6 +2468,31 @@ Every stage is resumable and idempotent. In order:
    `count_final`/`count_evals` must be replaced with exact path enumeration (§19.4).
    It could not be applied while the script was executing (§19.3). **Apply it once the
    pipeline is no longer running.**
+5. **Push after every meaningful commit — `git push`, not just `git commit`.**
+
+### 20.2.1 Standing rule: the remote is part of the record, not a step at the end
+
+Adopted 2026-08-21 00:25 on the repository owner's direct instruction, after this
+session had accumulated **25 commits on `exp/v2-corrected-matrix` with no upstream
+configured at all** — the entire crash recovery, both guard fixes and every incident
+write-up existing only on one machine's disk.
+
+**This is an availability argument, not a process one, and tonight is the evidence for
+it.** The machine had already lost power once (§18). A power loss is recoverable because
+the disk survives; a disk failure is not, and it would have erased the reconstruction of
+a night's work along with the reasoning that justifies it. The checkpoints are
+regenerable from a seed (§18.3); **the ledger and the decisions in it are not.**
+
+- `git push -u origin exp/v2-corrected-matrix` sets the upstream once; afterwards a plain
+  `git push` suffices.
+- **Push after each meaningful commit for the rest of a long run**, not once at the end.
+- **This does not conflict with §13.** Pushing a feature branch is not merging one.
+  `main` stays untouched, the PR is still opened at the end and still left **open** for
+  the repository owner. Verified at adoption time: `origin/main` unchanged at `133e09e`.
+- **Safe to run while training is live.** `git push` reads the object store and touches
+  neither the working tree nor the index, unlike the `git checkout`/`git switch` that §9
+  forbids during a live run. Do it between steps rather than mid-write, and never race a
+  commit that is still in progress.
 
 ### 20.3 Analysis conventions, pinned so v2 is comparable to v1 line for line
 
