@@ -1773,3 +1773,39 @@ the machine state differs. **The comparable claim is the ratio, not the absolute
 numbers, and even the ratio should be re-measured on a quiet machine over a longer
 window before it goes into a results table.** It is recorded here as a run-log
 observation, not as a §8 replacement.
+
+### 17.4 Operational hazard: a `pgrep -f` watcher matches its own command line
+
+Added to §9's list because it cost nothing this time only because it was caught.
+
+A completion watcher for the training matrix was written as:
+
+```
+until ! pgrep -f "run_training_matrix.py --arms reservoir"; do sleep 60; done
+```
+
+**This never fires.** `pgrep -f` matches against full command lines, and the watcher's
+own shell command line *contains the pattern string*, so the watcher always finds at
+least one match — itself — and loops forever. The failure is silent and looks
+identical to "the job is still running", which is the worst possible failure mode for
+an unattended run: the matrix would have finished and nothing would have noticed.
+
+**Fix: watch the process ID, not a command-line pattern.**
+
+```
+while kill -0 "$LAUNCHER_PID" 2>/dev/null; do sleep 60; done
+```
+
+`kill -0` tests for existence without signalling, and a PID cannot match itself by
+accident. The same trap applies to any `pgrep -f`/`grep` watcher written against a
+string that appears in its own invocation — the `grep -v grep` idiom exists for
+exactly this reason and does not help here, because the offending process is the
+watcher rather than the grep.
+
+### 17.5 Verified: all ten reservoir runs are distinct and the matrix is not double-running
+
+Checked directly rather than inferred from a process count, because a raw
+`ps | grep -c` had briefly reported 11 (it was matching the watcher shell, not an
+eleventh trainer). Extracting `--seed N` from every live command line gives exactly
+one process per seed 0-9, and exactly one launcher. No duplicate seed, no second
+launcher, no orphan from a previous session.
