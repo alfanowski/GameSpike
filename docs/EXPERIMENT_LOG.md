@@ -1258,3 +1258,51 @@ situ". The in-situ number requires collecting a fresh observation fixture under 
 v2-trained policy, which cannot be done until the v2 runs exist. If the v2 matrix
 completes, that measurement is cheap and should be taken; it is recorded here as a
 known gap rather than discovered later as an objection.
+
+### 14.14 The pilot is a BIT-IDENTICAL PREFIX of the v2 reservoir runs — verified, not assumed
+
+**Measured at 20:21 CEST, before the matrix was launched.** A 12,800-step smoke run
+was executed under the exact v2 flag set:
+
+```
+--arm reservoir --seed 0 --steps 12800 --checkpoint-every 6400 \
+--checkpoint-dir /tmp/gs_smoke \
+--grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0
+```
+
+and its `train_log.jsonl` compared update-for-update against
+`checkpoints/reservoir_seed0_clipemb/train_log.jsonl` on seven float fields
+(`mean_reward`, `mean_extrinsic_reward`, `policy_loss`, `value_loss`, `entropy`,
+`total_loss`, `grad_norm`):
+
+- **100 updates x 7 fields = 700 values compared.**
+- **0 exact mismatches. Worst absolute difference: 0.0.**
+
+The only field that differs is `run_tag` (`null` vs `"clipemb"`), which is the
+output-path coordinate and by construction touches nothing in the training loop.
+
+**Three things follow, and the third is the one that matters.**
+
+1. Training is deterministic given the seed, end to end, across process
+   invocations and across a `--checkpoint-dir` change. §2 asserted this as a design
+   property; this is the first time it has been checked against an independently
+   produced run rather than argued from the code.
+2. `--run-tag` and `--checkpoint-dir` are confirmed inert with respect to training
+   dynamics. Only the output path moves.
+3. **The nine pilot runs are not merely "suggestive of" the v2 runs — for seeds
+   0-2 they are literally the first 2,344 updates of them.** Whatever the go/no-go
+   diagnostic measures on `reservoir_seed{0,1,2}_clipemb` at update 2344 is exactly
+   what the v2 reservoir runs will pass through at update 2344. That upgrades the
+   diagnostic from a pilot-based inference to a direct observation of the first 30%
+   of three of the ten runs about to be launched.
+
+**Why the v2 runs are nonetheless started FRESH rather than resumed from the pilot
+checkpoints.** `--resume-from` restores the model and the optimizer state but not
+the emulator state or the RNG stream position, so a resumed continuation is *not*
+bit-identical to the corresponding suffix of a single full-length run. Mixing three
+resumed seeds with seven fresh ones would put a protocol difference inside the arm,
+which is precisely the kind of heterogeneity this project's own control discipline
+forbids. **And it would buy nothing:** the ten runs execute in parallel and the batch
+finishes when its slowest member does, so three seeds starting at 30% shortens the
+batch by approximately zero. Fresh runs are both cleaner and free. The pilot's value
+is as a diagnostic, which is how it is used.
