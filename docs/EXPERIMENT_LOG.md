@@ -1685,3 +1685,91 @@ hit them, not discovered by a reader:
 
 **None of these was used to bend a verdict**, and both verdicts hold under either
 reading of every ambiguity.
+
+## 17. v2 matrix run log
+
+Continues §14.12's live log past the point where the matrix actually launched.
+Appended as the run proceeds.
+
+### 17.1 The training runs execute from a PINNED WORKTREE, not the working tree
+
+The go/no-go diagnostic caught the working tree, at 20:21:10, in a state where the
+reservoir arm **could not be constructed at all**: a concurrent edit had added
+`tt_bond_decay` to `SpikingReservoir.__init__` and passed it to `_build_tt_cores`
+before that function's signature was updated, so every `use_tensor_train=True`
+construction raised `TypeError`. It self-healed seven seconds later. **Launching ten
+2.5-hour runs inside such a window would have killed all ten at model
+construction**, and nothing would have surfaced until the launcher reported ten
+failures.
+
+§9 of this ledger already said "do not `git checkout` while training is live", and
+`RESULTS.md` §2.7 records that v1's *evaluation* was run from a worktree pinned to
+`64839a9` for the same reason. **The v2 training matrix extends that discipline to
+training**, which is the longer and more expensive half:
+
+```
+git worktree add .claude/worktrees/v2train dc966a3
+```
+
+- The runs execute with `cwd` inside that worktree, so `python -m training.train`
+  resolves every import from the **pinned commit** — verified directly, not assumed
+  (`models.spiking_reservoir.__file__` reported from inside the worktree).
+- `--checkpoint-dir` is an **absolute path into the main repository**, so the data
+  lands in `checkpoints_v2/` while the code stays frozen. The worktree is disposable;
+  the data is not.
+- The pinned commit `dc966a3` deliberately **excludes** the then-uncommitted A8
+  changes to `models/spiking_reservoir.py`. The v2 runs therefore execute exactly the
+  reservoir construction v1 used. A8's `tt_bond_decay=1.0` is a verified bit-identical
+  no-op, so this changes nothing scientifically — it removes a class of accident, not
+  a confound.
+- **Verified before launching, not after:** a 1,280-step run from inside the worktree
+  reproduced `reservoir_seed0_clipemb`'s training log with **0 mismatches** across
+  10 updates x 7 float fields.
+
+### 17.2 Launch, and the memory question finally answered with a number
+
+**Reservoir arm launched 20:29 CEST**, 10 seeds, `--jobs 10`, under
+`--grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0`.
+
+Measured at 20:31, over a 120-second window across all ten live runs:
+
+| quantity | measured |
+|---|---|
+| aggregate throughput | **1,225.6 env-steps/s** |
+| per-run throughput | **122.6 env-steps/s** |
+| projected wall clock | **~2.2 hours** |
+
+Per-run throughput lands inside the **80-130 env-steps/s** band §3 predicted for the
+10-way condition, which is the first time that figure has been checked against a real
+ten-way matrix rather than extrapolated from a 4-way measurement.
+
+**§14.10 flagged memory as the one unverified risk. It is now measured and it is not
+a risk:**
+
+| quantity | measured |
+|---|---|
+| RSS per training process | **~570 MB** |
+| total across 10 processes | **5.70 GB** |
+| system memory free | **76%** |
+
+No document in this repository previously recorded a per-process memory figure. It is
+recorded here so the next person sizing a run does not have to rediscover it.
+
+### 17.3 Single-run throughput under the v2 configuration
+
+Measured with `/usr/bin/time`, one run at a time on an otherwise-quiet machine,
+25,600 steps, `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`, full v2 flag set:
+
+| arm | wall clock | env-steps/s |
+|---|---|---|
+| baseline | 20.71 s | **1,236** |
+| reservoir | 60.64 s | **422** |
+
+**Reservoir/baseline ratio: 2.93x slower.** `RESULTS.md` §8 reports 2.5x under the v1
+configuration (918 vs 371 steps/s). Two caveats before anyone quotes the difference
+as an effect of the corrected configuration: these runs include process startup, ROM
+boot and model construction inside a much shorter measurement window than §8's, and
+the machine state differs. **The comparable claim is the ratio, not the absolute
+numbers, and even the ratio should be re-measured on a quiet machine over a longer
+window before it goes into a results table.** It is recorded here as a run-log
+observation, not as a §8 replacement.
