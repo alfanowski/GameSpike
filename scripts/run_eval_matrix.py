@@ -382,6 +382,58 @@ def _run_subprocess(cmd, env):
     return subprocess.run(cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True)
 
 
+def _extract_json_result(stdout: str) -> Optional[dict]:
+    """Finds `training/evaluate.py --json`'s result line inside `stdout`,
+    which is NOT guaranteed to be pure JSON top to bottom.
+
+    A subprocess's stdout is not a private channel that only the code we
+    wrote gets to write to -- any library the child imports can, and does,
+    write to it too. PyBoy is exactly such a library: `pyboy.api.screen`,
+    `pyboy.plugins.screen_recorder` and `pyboy.plugins.screenshot_recorder`
+    each log a "Missing dependency Pillow" WARNING line to stdout (not
+    stderr) once per episode, entirely independent of anything this driver
+    or `evaluate.py` does. That is legitimate behaviour on PyBoy's part, not
+    a bug this driver gets to demand a fix for -- so treating the whole of
+    stdout as one JSON document (the original, naive `json.loads(proc.stdout)`)
+    was always wrong, and it is why every one of the 120 evaluation-matrix
+    jobs failed with "Expecting value: line 1 column 1 (char 0)" the moment
+    PyBoy logged anything before the result line: the parser choked on the
+    FIRST line of stdout, a warning, never even reaching the JSON.
+
+    The one guarantee this driver DOES get from `evaluate.py --json` is that
+    the result dict is printed as the last thing the process does, as a
+    single `print(json.dumps(...))` call with no embedded newlines (see
+    `training/evaluate.py`'s `--json` branch). So rather than parse the
+    whole blob, scan lines from the END backwards and take the first one
+    that (a) parses as JSON at all, (b) is a JSON *object* (dict), and
+    (c) carries an `arm` key -- (b)+(c) together are what distinguish an
+    actual result line from any other stray JSON-shaped text a library
+    might happen to emit (e.g. a bare number or list), since `arm` is a key
+    only `evaluate.py`'s own result payload has any reason to contain.
+    Scanning backwards, rather than taking the first JSON-shaped line found
+    forwards, is what makes this robust to warnings that themselves look
+    JSON-adjacent or to multiple JSON-parseable lines: the real result is
+    always the LAST one written, by construction of how `evaluate.py` prints.
+
+    Returns the parsed dict, or `None` if no line in `stdout` qualifies --
+    the caller is responsible for turning that into a diagnosable failure
+    (see `run_job`), since silently returning `None` here would leave the
+    caller no way to tell "no result line" apart from "result line was
+    itself `null`".
+    """
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            candidate = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict) and "arm" in candidate:
+            return candidate
+    return None
+
+
 def run_job(job: Job, python_exe: str, rom: str, episodes: int, eval_seed: int) -> dict:
     """Executes one non-dedup job to completion (or determines it's already
     done). Returns an outcome dict with at least `{"job": job, "status": ...}`
@@ -414,11 +466,29 @@ def run_job(job: Job, python_exe: str, rom: str, episodes: int, eval_seed: int) 
                 "error": f"child exited with status {proc.returncode}",
                 "stdout": proc.stdout, "stderr": proc.stderr}
 
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        return {"job": job, "status": "failed", "cmd": cmd,
-                "error": f"child exited 0 but stdout did not parse as JSON: {exc}",
+    # See `_extract_json_result`'s docstring for why this is a line-scan and
+    # not `json.loads(proc.stdout)`: PyBoy legitimately writes warning lines
+    # to stdout alongside the child's JSON result line, so the whole of
+    # stdout is not itself one JSON document.
+    data = _extract_json_result(proc.stdout)
+    if data is None:
+        # Every one of the original 120 failures produced only
+        # "Expecting value: line 1 column 1 (char 0)" -- utterly
+        # undiagnosable without re-running the job by hand. This message is
+        # built to be the opposite: exit code, the tail of stdout, and the
+        # full stderr, all inline, so a future failure of this shape can be
+        # root-caused straight from the run's own log.
+        tail_lines = proc.stdout.splitlines()[-20:]
+        tail = "\n".join(f"    {line}" for line in tail_lines) if tail_lines else "    (empty)"
+        stderr_block = ("\n".join(f"    {line}" for line in proc.stderr.splitlines())
+                        if proc.stderr else "    (empty)")
+        error = (
+            f"child exited {proc.returncode} but no line of stdout parsed as a JSON "
+            f"object containing an 'arm' key (see _extract_json_result). "
+            f"Last {len(tail_lines)} line(s) of stdout:\n{tail}\n"
+            f"  stderr:\n{stderr_block}"
+        )
+        return {"job": job, "status": "failed", "cmd": cmd, "error": error,
                 "stdout": proc.stdout, "stderr": proc.stderr}
 
     try:

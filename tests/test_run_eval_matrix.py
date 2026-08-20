@@ -1,13 +1,26 @@
 """Tests for `scripts/run_eval_matrix.py`.
 
-NEVER invokes `training/evaluate.py` for real: this driver's whole job is to
-launch that module as a child process, and every test here exercises that
-boundary through `run_eval_matrix._run_subprocess`, monkeypatched to a plain
-Python stand-in that returns a `subprocess.CompletedProcess`-shaped result
-without ever touching PyBoy or a ROM. This is deliberate, not merely
-convenient: with 10 real training processes saturating the machine while
-these tests run, spawning even one real evaluation would be both slow and an
-unwelcome 11th CPU hog.
+ALMOST NEVER invokes `training/evaluate.py` for real: this driver's whole job
+is to launch that module as a child process, and nearly every test here
+exercises that boundary through `run_eval_matrix._run_subprocess`,
+monkeypatched to a plain Python stand-in that returns a
+`subprocess.CompletedProcess`-shaped result without ever touching PyBoy or a
+ROM. This is deliberate, not merely convenient: with 10 real training
+processes saturating the machine while these tests run, spawning a real
+evaluation on every test would be both slow and an unwelcome 11th CPU hog.
+
+The ONE exception is `test_real_evaluate_subprocess_stdout_is_correctly_
+extracted` in section 7, and it exists precisely BECAUSE of that rule, not
+despite it: a mock defines the child's stdout shape by fiat, so a suite built
+entirely on `_run_subprocess` mocks can prove this driver handles whatever
+shape its authors imagined stdout would have, and nothing about whether that
+imagined shape matches reality. It didn't -- PyBoy writes warning lines to
+real stdout, `training.evaluate --json`'s ACTUAL output is "warnings, then
+one JSON line," and every one of this suite's 15 original tests (all mocked)
+stayed green while all 120 real evaluation-matrix jobs failed on exactly that
+gap. One narrow, `--episodes 1`, skip-if-no-ROM-or-checkpoint integration test
+is the only thing that closes it, because only a real child process's real
+stdout can contradict an assumption baked into every mock in this file.
 
 Section map: (1) job-matrix construction, including the 3x2x10x2=120 default
 count and that output filenames really do round-trip through
@@ -16,11 +29,14 @@ likely to silently break, since that function's naming convention and this
 driver's `output_path_for` are two independent pieces of code that must agree
 byte-for-byte; (2) resume logic; (3) dedup (best == final); (4) failure
 handling (non-zero exit, arm mismatch), including that one bad job never
-takes down the others.
+takes down the others; (5) [see below] stdout JSON extraction, both the real
+end-to-end case and the synthetic PyBoy-warnings-then-JSON shape that broke
+every job before the fix.
 """
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -37,6 +53,48 @@ from scripts.run_eval_matrix import (
     validate_result,
     _resume_check,
 )
+
+# Verbatim from a real 2-episode `training.evaluate --json` run (see the task
+# that produced this fix): PyBoy logs these three WARNING lines to STDOUT,
+# not stderr, once per episode, entirely independent of anything this driver
+# or evaluate.py does -- see `run_eval_matrix._extract_json_result`'s
+# docstring for why that makes a naive whole-stdout `json.loads` wrong.
+_PYBOY_WARNING_LINES = (
+    'pyboy.api.screen               WARNING  Cannot generate screen image. '
+    'Missing dependency "Pillow".',
+    'pyboy.plugins.screen_recorder  WARNING  pyboy.plugins.screen_recorder: '
+    'Missing dependency "Pillow". Recording disabled',
+    'pyboy.plugins.screenshot_recorder WARNING  pyboy.plugins.screenshot_recorder: '
+    'Missing dependency "Pillow". Screenshots disabled',
+)
+
+ROM_PATH = os.environ.get("MARIO_LAND_ROM_PATH")
+_CHECKPOINT_ROOT = os.path.join(run_eval_matrix.REPO_ROOT, "checkpoints")
+
+
+def _find_a_real_checkpoint():
+    """Returns `(arm, path)` for the first real, already-trained checkpoint
+    found under `checkpoints/`, or `None` if the tree doesn't exist or is
+    empty -- e.g. a fresh clone that hasn't trained anything yet. Picking
+    ANY checkpoint (not a specific arm/seed) keeps this test independent of
+    which runs happen to exist on the machine it's run on.
+    """
+    if not os.path.isdir(_CHECKPOINT_ROOT):
+        return None
+    for run_name in sorted(os.listdir(_CHECKPOINT_ROOT)):
+        arm = run_name.split("_seed")[0]
+        if arm not in ("baseline", "reservoir"):
+            continue
+        run_dir = os.path.join(_CHECKPOINT_ROOT, run_name)
+        if not os.path.isdir(run_dir):
+            continue
+        steps = sorted(
+            (f for f in os.listdir(run_dir) if f.startswith("step_") and f.endswith(".pt")),
+            key=lambda f: int(f[len("step_"):-len(".pt")]),
+        )
+        if steps:
+            return arm, os.path.join(run_dir, steps[-1])
+    return None
 
 
 def _touch_run(checkpoint_dir, arm, seed, step=100, reward=1.0):
@@ -417,3 +475,124 @@ def test_dedup_copy_also_enforces_arm_match(tmp_path):
     outcome = run_dedup_job(best_job)
     assert outcome["status"] == "failed"
     assert not os.path.isfile(best_job.output_path)
+
+
+# ---------------------------------------------------------------------------
+# 7. stdout JSON extraction -- the bug this whole file's task fixed:
+#    `training.evaluate --json`'s stdout is not a pure JSON document (PyBoy
+#    writes warning lines to it too), so the driver has to find the result
+#    line, not `json.loads` the blob whole.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    not ROM_PATH or not os.path.exists(ROM_PATH),
+    reason="MARIO_LAND_ROM_PATH not set or file missing; set it to your own legally-dumped ROM",
+)
+def test_real_evaluate_subprocess_stdout_is_correctly_extracted(tmp_path):
+    """THE regression guard for the entire class of bug in this task: every
+    other test in this file monkeypatches `_run_subprocess`, so none of them
+    can ever notice a contract mismatch between what the real child actually
+    prints and what a mock was written to pretend it prints -- which is
+    exactly how all 120 real evaluation-matrix jobs failed while this whole
+    mocked suite stayed green. This test runs the real
+    `python -m training.evaluate --json` subprocess, for real, against a real
+    checkpoint and the real ROM, with `--episodes 1` to keep it fast, and
+    asserts `_extract_json_result` (the driver's own extraction function,
+    not a re-implementation of it in the test) pulls a valid result out of
+    the real stdout.
+
+    Skips cleanly (not a failure) on a fresh clone: no ROM configured, or no
+    checkpoint yet trained -- both legitimate states this suite must still
+    pass in.
+    """
+    if not os.path.isdir(_CHECKPOINT_ROOT):
+        pytest.skip(f"no {_CHECKPOINT_ROOT!r} directory -- nothing has been trained yet")
+    found = _find_a_real_checkpoint()
+    if found is None:
+        pytest.skip(f"no real checkpoint (step_*.pt) found under {_CHECKPOINT_ROOT!r}")
+    arm, checkpoint_path = found
+
+    job = Job(selection="final", arm=arm, seed=0, regime="continuous",
+              checkpoint_path=checkpoint_path, checkpoint_step=None,
+              output_path=str(tmp_path / "eval_result.json"))
+    cmd = run_eval_matrix.build_command(sys.executable, job, ROM_PATH, episodes=1, eval_seed=0)
+
+    env = dict(os.environ)
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    # The real seam, unmocked -- see the module docstring's explanation of
+    # why this is the one test in the file allowed to do this.
+    proc = run_eval_matrix._run_subprocess(cmd, env)
+
+    assert proc.returncode == 0, (
+        f"real `training.evaluate` child exited {proc.returncode}\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+    result = run_eval_matrix._extract_json_result(proc.stdout)
+    assert result is not None, (
+        f"_extract_json_result found no JSON result line in the real child's "
+        f"stdout -- either the extractor or evaluate.py's --json output "
+        f"format has regressed. Full stdout:\n{proc.stdout}"
+    )
+    assert result["arm"] == arm
+    assert "mean_extrinsic_return" in result
+
+
+def test_extract_json_result_skips_real_pyboy_warning_lines_and_finds_the_json():
+    """The exact real-world stdout shape that broke every one of the original
+    120 jobs: several PyBoy WARNING lines (verbatim text, see
+    `_PYBOY_WARNING_LINES` above) precede the single JSON result line that
+    `training.evaluate --json` prints last, once per episode -- so a
+    2-episode run repeats the warning block twice before the JSON.
+    """
+    payload = {"arm": "baseline", "n_episodes": 2, "mean_extrinsic_return": 53.375}
+    stdout = "\n".join([*_PYBOY_WARNING_LINES, *_PYBOY_WARNING_LINES, json.dumps(payload)])
+
+    result = run_eval_matrix._extract_json_result(stdout)
+    assert result == payload
+
+
+def test_extract_json_result_returns_none_when_no_line_qualifies():
+    """No JSON object line anywhere in stdout -- the extractor must report
+    'nothing found' (`None`), not raise or fabricate a match."""
+    stdout = "\n".join(_PYBOY_WARNING_LINES)
+    assert run_eval_matrix._extract_json_result(stdout) is None
+
+
+def test_extract_json_result_rejects_a_json_line_missing_the_arm_key():
+    """A JSON object that parses fine but has no `arm` key must NOT be
+    accepted -- `arm` is what tells a real result line apart from some other
+    stray JSON-shaped text a library might emit; without requiring it, this
+    driver could silently accept the wrong line."""
+    no_arm_payload = {"n_episodes": 2, "mean_extrinsic_return": 53.375}  # no 'arm' key
+    stdout = "\n".join([*_PYBOY_WARNING_LINES, json.dumps(no_arm_payload)])
+    assert run_eval_matrix._extract_json_result(stdout) is None
+
+
+def test_run_job_fails_with_a_diagnostic_including_stderr_when_no_json_line_is_found(
+    tmp_path, monkeypatch
+):
+    """When stdout has no qualifying JSON line, `run_job`'s failure message
+    must be self-contained: exit code, stdout tail, AND stderr, inline in
+    `error`, so a future failure of this shape is debuggable from the log
+    alone (see the task this fix came from -- the ORIGINAL message,
+    "Expecting value: line 1 column 1 (char 0)", was not)."""
+    def fake_run_subprocess(cmd, env):
+        stdout = "\n".join(_PYBOY_WARNING_LINES)  # no JSON line at all
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=stdout,
+            stderr="Traceback (most recent call last):\nRuntimeError: simulated crash",
+        )
+    monkeypatch.setattr(run_eval_matrix, "_run_subprocess", fake_run_subprocess)
+
+    job = Job(selection="final", arm="baseline", seed=0, regime="continuous",
+              checkpoint_path="ckpt.pt", checkpoint_step=100,
+              output_path=str(tmp_path / "eval_baseline_seed0_continuous.json"))
+    outcome = run_job(job, python_exe="python", rom="rom.gb", episodes=1, eval_seed=0)
+
+    assert outcome["status"] == "failed"
+    assert "RuntimeError: simulated crash" in outcome["error"]
+    assert "Traceback (most recent call last)" in outcome["error"]
+    for warning_line in _PYBOY_WARNING_LINES:
+        assert warning_line in outcome["error"]
+    assert not os.path.isfile(job.output_path)
