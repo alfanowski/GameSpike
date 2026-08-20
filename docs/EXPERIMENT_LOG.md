@@ -1991,3 +1991,52 @@ their verdicts feed the write-up.
 `checkpoints_v2_baseline_launch.log` and `results_v2_eval.log`, then each run's own
 `checkpoints_v2/{arm}_seed{n}/launcher.log`. §14.11's checklist re-runs any stage by
 hand; every stage is resumable and idempotent.
+
+### 17.11 A7/A9 measurement tooling, and a 0.81-point inconsistency inside this ledger
+
+`analysis/reservoir_health.py` (+ `tests/test_reservoir_health.py`, 38 tests; suite
+now **321 passed, 0 failed**) implements both pre-registered measurements: A7's
+dead-gradient `in_proj` column count (§14.5) and A9's operating-point trajectory
+(§15.6). It is read-only, writes nothing, skips gracefully over runs that do not
+exist yet, and computes each verdict against its pre-registered band **in code**, so
+the verdict is not a judgement call made while looking at the number.
+
+**It reproduces A4a exactly.** Run against the completed v1 `reservoir_seed0`:
+
+```
+865 dead cols, 10.5591%, 13840 params, 9.9440% of budget
+newly_dead per transition: [0]   nesting_holds=True
+```
+
+**865 / 10.5591% / 13,840 / 9.9440% is a digit-for-digit match to §12/A4a's published
+figures.** The frozen-reservoir invariant also holds at 0.0e+00 max abs diff. That is
+the correctness check that matters: new tooling that reproduces an already-published
+measurement is trustworthy in a way that new tooling producing new numbers is not.
+
+**The inconsistency, recorded rather than smoothed over.** The same run's silent
+fraction measures **46.2280%**, against the **45.42%** quoted in §12/A4a's prose
+table — a gap of **0.81 percentage points**, i.e. roughly 66 of 8,192 units.
+
+- The 46.2280% figure is a **bit-for-bit match to `analysis/pilot_diagnostics.py`'s
+  own independent implementation** (every column agrees: spike rate 0.200348,
+  saturated 1.3428%, `||W||` 1.6709, DC 1.8594, offset std 5.6270).
+- So **two independently written measurement scripts agree with each other and both
+  disagree with §12's prose.**
+- **Nothing was adjusted to close the gap.** It is a pre-existing discrepancy between
+  §12's prose and the tooling this project has since committed, not something the new
+  script introduced. The likely cause is a difference in the probe definition behind
+  A4a's 3,721-unit count, but that has **not been run down**, and saying "likely" is
+  as far as the evidence goes.
+- **Consequence for the write-up:** where a silent fraction for v1 is quoted next to
+  a v2 number, it must come from `reservoir_health.py` so both sides of the
+  comparison are measured by the same instrument. §12's 45.42% stays on the page per
+  the append-only rule, with this paragraph as the correction of record.
+
+**On the v1 smoke's "FALSIFIED" verdicts — they are not results.** Running the script
+against v1 prints `A7 verdict: FALSIFIED` (10.5591% against a <2% prediction) and
+`A9 verdict: FALSIFIED` (46.2280% against a <40% prediction). **v1 is the `legacy` +
+`global` configuration; the predictions were registered about the v2 runs.** The
+smoke output is the script exercising its verdict logic against the reference
+condition, and what it actually shows is that **v1 sits far outside both predicted
+bands** — which is precisely what makes the v2 predictions non-trivial. The real A7
+and A9 verdicts are computed against `checkpoints_v2` when the matrix completes.
