@@ -451,3 +451,301 @@ log, not a hard gate".
 setting — including the ones where the spike rate collapses. Never a single
 favourable point. Any measurement whose method has a limitation gets the
 limitation printed next to the number.
+
+---
+
+## 12. A4-A6 RESULTS
+
+Appended beneath §11, never edited into it, per §11's own rule. **Three of the
+five pre-registered hypotheses are disconfirmed and they are reported here in the
+same detail as the one that held.** The headline is uncomfortable and is stated
+first: neither of the two construction knobs §11 pre-registered (`spectral_radius`,
+`tt_rank`) moves the reservoir's dynamical regime at all, and the real defect was
+somewhere nobody had pre-registered — the *input* to the reservoir, not the
+reservoir.
+
+Unless stated otherwise every measurement is on `reservoir_seed0`-family models at
+the production geometry (`reservoir_size=8192`, `tt_rank=8`, `tt_n_cores=4`,
+`beta=0.9`, threshold 1.0) and every "silent" figure is measured against **6,000
+real observation steps** — 3,000 collected under the trained policy
+(`checkpoints/reservoir_seed0/step_1000064.pt`) and 3,000 under a uniform-random
+policy, pooled.
+
+### A4a — mechanism CONFIRMED, set equality DISCONFIRMED
+
+The predicted mechanism holds exactly, in the strong direction:
+
+- **`dead \ silent` = 0. No exceptions.** Every single dead-gradient `in_proj`
+  column belongs to a unit that never fires. There is no column that died for an
+  optimiser/clipping reason, which rules out the competing explanation §11 named
+  (the readout being frozen out by global clipping) as a *source of dead columns*.
+
+The predicted **set equality does not hold**, and the converse direction fails
+badly:
+
+| set | size | fraction of 8192 |
+|---|---|---|
+| dead `in_proj` columns (Adam `exp_avg_sq` exactly 0) | **865** | 10.5591% |
+| units silent over the 6,000-step probe | **3,721** | 45.42% |
+| Jaccard(dead, silent) | **0.2325** | — |
+| Jaccard(dead, silent under **all 11** sampled embeddings) | **0.6600** | — |
+
+So "silent ⇒ dead" is true and "dead ⇒ silent" is true, but "silent ⇒ dead" in the
+*set* sense is false: most silent units are silent under the *final* embedding
+while having fired at some earlier point in training, and a unit only needs to
+have fired once, ever, to have received gradient. Restricting the silent set to
+units silent under **all 11 sampled embedding snapshots** raises the Jaccard from
+0.2325 to 0.6600, which is the direct evidence for that reading — but 0.6600 is
+still not 1.0, and the honest conclusion is that **§11's "one root cause" framing
+is right about the mechanism and wrong about the arithmetic**: fixing the silent
+units would not, on its own, have recovered a 15.28% dead budget, because the dead
+budget is not 15.28%.
+
+**The dead set only ever SHRINKS, and it is perfectly nested.** Across the ten
+checkpoints of `reservoir_seed0`, `dead(t+1) ⊂ dead(t)` at every one of the 9
+transitions, with `newly_dead = 0` at all 9 — no column ever dies after training
+starts; columns only wake up.
+
+| step | dead columns | % of 8192 |
+|---|---|---|
+| 100096 | 2,147 | 26.2085% |
+| 500480 | 1,329 | 16.2231% |
+| 1000064 | **865** | **10.5591%** |
+
+**Correction to a previously-recorded figure in this ledger.** §11.0 records
+"1,329 columns (16.22%) … 21,264 parameters (15.28% of the 139,179 trainable
+budget)" as a property of `checkpoints/reservoir_seed0/step_1000064.pt`. **That
+attribution is wrong: 1,329 / 16.22% / 15.28% is the value at `step_500480`, not
+at the final checkpoint.** The correct final-checkpoint figure is **865 columns
+(10.5591%), 13,840 parameters, 9.9440% of the trainable budget.** The §11.0 text
+is left standing as written, per the append-only rule; this paragraph is the
+correction of record.
+
+### A4b — CONFIRMED IN DIRECTION, PALLIATIVE IN MAGNITUDE
+
+Recalibrating the embedding scale against real observation statistics does reduce
+the silent fraction, as predicted — and it cannot fix the problem.
+
+| embedding scale | silent fraction |
+|---|---|
+| 1.0 (default) | 42.38% |
+| 2.33 (derived from real observation statistics) | 30.60% |
+| … sweep continues … | … |
+| 32.0 | hard floor near **20%** |
+
+**A hard floor near 20% silent persists even at 32x the default scale.** Scale is
+a multiplier: it multiplies the informative (AC) and uninformative (DC) parts of
+the drive together, so it can never change their *ratio*, and it is the ratio that
+strands units on the wrong side of threshold. §11's cost-if-wrong clause said an
+insensitive silent fraction would mean "silence is a property of the recurrent
+regime rather than of the drive" — that inference turns out to be a false
+dichotomy, and A5/A6 below show the recurrent regime is not the lever either. It
+is a third thing: the *offset* of the drive.
+
+**The code's two stated calibration targets are mutually incompatible under real
+observations.** `models/policy_value_reservoir.py` documented both "induced
+input-current std ≈ 0.3" and "mean spike rate ≈ 2%". Under real observations the
+induced input-current std at the default init is **0.128683**, not the ~0.3163 the
+comment claimed — that figure was measured against synthetic N(0,1) inputs, which
+the file itself flagged with an explicit `# KNOWN GAP:` comment. Driving the std
+up to 0.3 pushes the spike rate far above the healthy band; holding the spike rate
+at ~2% keeps the std near 0.13. **The spike-rate target is the one that
+corresponds to healthy dynamics** and is the one now calibrated against; the 0.3
+figure is retained in the source only as the historical record of how the scalar
+was originally chosen.
+
+### A4c — DISCONFIRMED
+
+With the embedding held fixed and only the reservoir seed varied:
+
+- silent fraction spans **2.56 percentage points** (28.27% – 30.84%);
+- normalized entanglement entropy spans **0.98665 – 0.99417**.
+
+**Reservoir seed selection is not worth the methodological complexity.** The
+sibling project's Task 3.3 selection procedure would be selecting among candidates
+that differ by less than three points on the criterion, which is noise next to the
+44-point effect A4b/§12's root-cause section identifies. §11's cost-if-wrong
+clause applies as written: §4's "seeds genuinely produce different frozen
+reservoirs" remains true bitwise and is **dynamically irrelevant**.
+
+### A5 — DISCONFIRMED, with a proof rather than a null result
+
+Sweeping `spectral_radius` over {0.7, 0.85, 0.95, 1.0, 1.05}: **normalized
+entanglement entropy is numerically identical to 5 decimal places at every
+setting, for every seed.** Not "insensitive" — identical.
+
+**This is provable, not empirical.** On the TT path with `tt_core_std=None`,
+`spectral_radius` enters construction *only* through the derived scalar
+`s = (spectral_radius² / (N·R_int))^(1/2d)`, which multiplies every i.i.d. Gaussian
+core by the same number. Normalized entanglement entropy is computed from the
+*normalized* Schmidt spectrum `p = σ²/Σσ²` of the mixed-canonical centre core, and
+a global rescaling of all cores rescales every singular value by a common factor,
+which cancels in that normalization. **Multiplying all cores by 1000 changes S̄ by
+2.8e-11** — that is the check, and it is the whole explanation. §11's mechanism
+note anticipated a *weak* dependence via the 1/8 exponent; the truth is stronger,
+the dependence is exactly zero.
+
+**Silent fraction moves OPPOSITE to the hypothesis.** H5 predicted that lowering
+the spectral radius toward the ordered regime would improve firing health:
+
+| spectral_radius | silent fraction |
+|---|---|
+| 0.7 | **53.11%** |
+| 1.05 | **43.96%** |
+
+Lowering the radius makes it *worse*, because the recurrent drive is part of what
+pushes hyperpolarised units back toward threshold. §11's cost-if-wrong clause
+therefore binds in full: **the Phase 1 reservoir cannot be tuned into the
+published productive band through spectral radius at all**, and the reason is
+structural, not a tuning failure.
+
+### A6 — DISCONFIRMED
+
+Sweeping `tt_rank` over {4, 8, 16, 32}, three seeds each: **S̄ spans only
+0.96221 – 0.99596.** There is no order-to-chaos transition. The bond dimension
+does not behave as a second criticality knob in this construction.
+
+The reason is visible in the Schmidt spectrum itself. At the middle bond the
+normalized spectrum is **near-flat — 0.16881 … 0.09403 against 0.125 for a
+perfectly uniform 8-dimensional bond** — which is exactly what i.i.d. Gaussian
+cores generically produce: a near-maximally-entangled cut, hence S̄ pinned near 1.
+
+**Conclusion, stated as strongly as the evidence supports: no construction that
+keeps i.i.d. Gaussian cores can reach the productive band S̄ ∈ [0.1, 0.5].**
+Reaching it needs structured (correlated, or low-rank-biased) cores, which is a
+different construction and not a knob on this one. The `tt_core_std=None` confound
+§11 declared in advance is real but is not what produced this result — the result
+survives it, because the spectrum shape, not its scale, is what pins the entropy.
+
+### The falsification condition was UNTESTABLE AS FORMULATED
+
+§11's binding falsification condition reads: *"If entanglement entropy CAN be
+moved into S̄ ∈ [0.1, 0.5] but downstream task performance does not improve, that
+resolves the sibling project's open question NEGATIVELY."*
+
+**Its antecedent never occurs.** A5 and A6 together establish that entanglement
+entropy cannot be moved into that band by either pre-registered knob — provably
+so, in A5's case. A conditional whose antecedent is false is not evidence about
+its consequent. **The sibling project's open question therefore remains OPEN,
+resolved in neither direction.** It is recorded here as a formulation failure of
+the pre-registration: the condition was written assuming the knobs worked, and a
+pre-registration that only produces a verdict when its manipulation succeeds is
+not a complete pre-registration. This is not being reframed as a tuning failure
+and it is not being quietly dropped.
+
+### Root cause — NOT PRE-REGISTERED, found post hoc
+
+**Stated plainly: nothing below was pre-registered.** It was found while
+investigating why A4b's scale sweep had a floor, it is a post-hoc explanation, and
+it should be read with the discount that deserves. What justifies recording it at
+this weight is that it is *measured*, it is *algebraically exact*, and it makes a
+falsifiable prediction that was then checked across 8 seeds.
+
+**The observation is DC-dominated.** Over the 6,000 real steps:
+
+- `||E[obs]||² = 1.331336` against `E||obs||² = 1.713384` — **77.70% of the
+  observation's energy is its own mean.** Real dimensions are mostly non-negative
+  with large means (the level timer, lives, powerup state and the on-ground flag
+  are near-constant or slowly-drifting; three slots are hardcoded zero).
+- Consequently **76.11% of the reservoir's input-current variance is DC.**
+
+**The LIF neuron amplifies exactly the useless component.** With `beta=0.9` a
+constant input is integrated to steady state with gain `1/(1-beta) = 10.0`, while
+a zero-mean fluctuating input accumulates only to `1/sqrt(1-beta²) = 2.2942` — a
+**4.3589x amplification favouring DC** over AC.
+
+**The result is a frozen per-unit membrane offset.** Because `W_in` is frozen, each
+unit's DC offset is fixed for the entire run: std **0.943583** across units, range
+**[-3.5080, +3.4847]**, against a firing threshold of 1.0. Measured directly:
+
+- **1,223 units (14.93%) sit permanently below −threshold — silent forever**,
+  whatever the input does;
+- **1,188 units (14.50%) sit permanently above threshold — saturated.**
+
+That is the floor A4b's sweep hit, and it explains why scale cannot clear it:
+scale multiplies DC and AC together and leaves the offsets in place.
+
+**The fix is a bias initialisation, and it is exact.** The embedding is LINEAR, so
+
+    W @ (obs − μ) ≡ W @ obs + (−W @ μ)
+
+identically — **verified numerically to a max absolute difference of 5.96e-08.**
+Centring the input is therefore *precisely* the bias initialisation
+`embedding.bias := −(W @ μ)`. It costs **zero new parameters** (the bias already
+existed), changes no shapes (every existing `state_dict` still loads), and leaves
+the bias **trainable**, so it is a starting point rather than a constraint.
+
+**Measured effect, mean over 8 seeds:**
+
+| | silent-unit fraction | mean spike rate | saturated units |
+|---|---|---|---|
+| default init | 44.7403% | 0.024351 | (see above) |
+| centred init | **1.7532%** | **0.020912** | **zero** |
+
+The spike rate lands inside the ~2% band `models/spiking_reservoir.py` documents as
+healthy.
+
+**Shipped as `--embed-init-mode {legacy,centered}` (default `legacy`) and
+`--embed-scale` (default 1.0), applied IDENTICALLY TO BOTH ARMS.** The default
+path is bit-identical to the code the 20 completed runs and 200 checkpoints were
+produced under (verified: same `grad_norm` sequence, same trained `state_dict`,
+same Adam state on both arms). Both settings are recorded in every checkpoint and
+every JSONL log line, and `load_checkpoint` reads them with `.get(...)` defaults so
+files that predate them still load.
+
+Both arms get the treatment because **input centring is a generic initialisation
+correction, not a reservoir-specific advantage**. It is expected to help the
+reservoir arm more — the baseline's embedding feeds a **trainable GRU** that can
+learn to absorb a constant DC offset, whereas the reservoir's feeds a **frozen
+nonlinearity** that cannot — but that expected asymmetry is a *result*, not a
+licence to apply the treatment asymmetrically. A treatment only one arm receives
+is not a control.
+
+**Independent reproduction in this repository** (`tests/test_embedding_centering.py`,
+against the committed 6,000-step observation fixture, seed *s* used as both the
+global and the frozen-reservoir seed, i.e. what `--seed s` actually produces):
+
+| init | silent fraction (8-seed mean, range) | mean spike rate | saturated |
+|---|---|---|---|
+| `legacy`, scale 1.0 | 45.5917% (43.3594 – 47.8149) | 0.022551 | 0 |
+| `legacy`, scale 2.33 | 32.2113% (28.8574 – 34.6191) | 0.086188 | 0 |
+| `legacy`, scale 3.0 | 30.3329% (27.1729 – 32.5562) | 0.117302 | 0 |
+| `centered`, scale 1.0 | 65.9454% (58.7769 – 73.3887) | 0.000474 | 0 |
+| **`centered`, scale 3.0** | **2.0523% (1.2939 – 2.6489)** | **0.018482** | **0** |
+
+Note the two rows that are *not* the fix: `legacy` at scale 3.0 buys firing by
+brute force and overshoots the healthy band five-fold, and `centered` at scale 1.0
+removes the DC drive without replacing it and starves the reservoir. **The bias and
+the gain are only a fix together**, which is why both knobs shipped.
+
+### Limitations, stated plainly
+
+- **6,000 observation steps, not 1,000,064.** "Silent" throughout §12 means "did
+  not fire once in 6,000 steps". A unit firing at a true rate of 1e-4 would read
+  as silent here. Every silent fraction in this section is therefore an upper
+  bound on the permanently-silent fraction, and the 14.93% figure derived from the
+  DC offset (which is a statement about the offset, not about a firing count) is
+  the only genuinely *permanent* number in the section.
+- **11 embedding snapshots out of 7,813 optimizer updates.** A4a's "silent under
+  all 11 sampled embeddings" set — the one that lifts the Jaccard to 0.6600 — is
+  sampled at ~0.14% of the trajectory. The nesting result (`dead(t+1) ⊂ dead(t)`,
+  `newly_dead = 0`) is likewise established only at the 9 checkpoint boundaries; a
+  column could in principle die and revive between two of them.
+- **The DC offset is policy-dependent, and a pooled bias is a compromise.** A bias
+  fitted on the pooled data gives **1.37% silent on pooled data, 4.61% on
+  trained-policy-only data, and 14.82% on random-policy-only data** — against
+  **49.30%** and **53.99%** for the current default on those same two splits. The
+  fix is a large win on every split and a *smaller* win on the split furthest from
+  the data it was fitted on, which is exactly the shape one should expect and
+  exactly the shape that should be watched. The observation distribution also
+  shifts *during* training as the policy improves, so the offset a run needs at
+  step 1,000,000 is not the one it needs at step 0.
+- **The bias is trainable, and whether it adapts was NOT verified.** In principle
+  the run can move the bias to track the policy-dependent shift above; no
+  measurement in this section shows that it does. That is an open question, not a
+  claim.
+- **No task-performance result.** Everything in §12 is a *construction* diagnostic.
+  Whether a healthier reservoir produces a better agent is unmeasured, and the
+  pre-registered falsification condition that would have connected the two was
+  untestable as formulated (above). Nothing here licenses a claim about the Phase 1
+  arm comparison.
