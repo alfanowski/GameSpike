@@ -2336,3 +2336,76 @@ disk. Its own stage 4 still runs the §14.11 command and still produces the empt
 comparison described above; that output is superseded by the analysis script's, and is
 harmless because every guard preceding it is unaffected. `run_v2_pipeline.sh` itself is
 corrected only once it is no longer executing.
+
+### 19.4 An independent audit found the completeness guard can pass FALSELY, and the fix could not be applied to the running script
+
+`scripts/run_v2_pipeline.sh` was audited by a separate agent, deliberately, while it ran
+— the guards are the only thing standing between an interrupted stage and a published
+comparison with fewer seeds than it claims, and they had never been exercised in their
+failure path. The audit built a throwaway sandbox and ran the counting functions against
+constructed directory trees rather than reasoning about them.
+
+**The finding, confirmed empirically.** The guard counts final checkpoints with
+
+```
+find "$REPO/checkpoints_v2" -type f -name 'step_1000064.pt' -path "*/${arm}_seed*"
+```
+
+and **`*/${arm}_seed*` is not anchored.** A run directory with a tag suffix —
+`reservoir_seed0_clipemb/`, exactly what `--run-tag` exists to produce and what
+§14.11's own manual-recovery fallback would create — matches it too. So **one stray
+tagged directory can silently substitute for one genuinely missing seed** and make the
+guard report 10/10 when a seed never completed. Demonstrated: nine real
+`reservoir_seed{1..9}` plus one stray `reservoir_seed0_clipemb/step_1000064.pt`, with
+seed 0 absent, counts **10**.
+
+The failure is asymmetric, and only one direction is dangerous. Ten real plus one stray
+counts 11, which trips the `-ne 10` comparison and aborts — that direction fails safe,
+the same way §17.12's zsh-glob trap failed safe. **Only the substitution case passes
+falsely**, and it is the case that produces a wrong result rather than a failed run.
+
+Two smaller findings from the same audit, both real:
+
+- **Stages 4 and 5 check no exit codes.** Every `$?` is logged and none is tested, so the
+  script could log `=== v2 pipeline COMPLETE ===` and exit 0 with an aggregation that had
+  crashed. This does not threaten seed-count integrity (guard 3 runs first), but
+  "COMPLETE" in the log is not evidence the statistics are valid.
+- **`save_checkpoint` is not atomic** (a bare `torch.save`, no temp-file-then-`os.replace`),
+  and an existence-only guard cannot tell a complete checkpoint from one truncated by a
+  process dying mid-write. This machine lost power mid-matrix once already (§18), which
+  is precisely when that happens.
+
+**Verified NOT bugs**, recorded because they were the plausible suspects: `$?` is
+captured correctly in every case (no command intervenes before the `log` call);
+`/bin/bash` here is **GNU bash 3.2.57**, whose real `set -u` gotcha is `"${arr[@]}"` on
+an *empty* array, and `V2FLAGS` is unconditionally populated with six literal tokens and
+never reassigned, so it is always in the safe case; the skip-if-already-complete branches
+introduce no hole of their own because the unconditional guard re-runs the same count
+immediately afterwards; a killed subprocess cannot corrupt guard correctness for stages
+1–3, because those guards read filesystem state rather than exit codes; and
+`--embed-scale 3.0` cannot be dropped, since the flag array is defined once and expanded
+identically into both arms.
+
+**The fix could not be applied where it was needed, and that is the operationally
+important part.** §19.3 forbids editing a running bash script, and the pipeline was
+mid-stage-1 blocked on a three-hour training launcher when the audit reported. So:
+
+1. **`scripts/run_v2_analysis.sh`, which was not yet running, was fixed properly** — it
+   now enumerates all 120 expected evaluation paths explicitly instead of pattern-
+   matching, verifies that all 20 final checkpoints actually **load** and self-identify
+   with the right arm, seed, clip mode and embedding config rather than merely existing,
+   and aborts on a non-zero exit from every step.
+2. **The live risk was closed by inspection instead of by code.** The bug fires only if a
+   stray tagged directory exists in `checkpoints_v2/`. Checked at the time of the audit
+   and again before each guard: the directory contains exactly the ten canonical
+   `reservoir_seed{0-9}` names and nothing else. No `--run-tag` run is being launched
+   into it.
+3. **`run_v2_pipeline.sh` is corrected once it is no longer executing**, using exact
+   enumeration rather than an anchored pattern — the pattern can always be got subtly
+   wrong again, whereas twenty literal paths cannot.
+
+**The reusable lesson is about ordering, not about globs.** A guard is the one component
+whose failure path must be tested *before* it is relied on, because its whole purpose is
+to be correct on the day something else has already gone wrong — and once the long
+unattended job is running, the guard is exactly the thing that can no longer be safely
+changed.

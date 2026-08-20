@@ -47,25 +47,83 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
 cd "$REPO" || exit 1
 
-# Guard: refuse to aggregate a partial matrix. §17.10 -- evaluating or aggregating
-# an incomplete matrix is a WRONG RESULT rather than a failed run. find, never a
-# bare glob (§17.12 lesson 3).
-n_eval=$(find "$REPO/results_v2" -type f -name 'eval_*_seed*_*.json' 2>/dev/null | wc -l | tr -d ' ')
-if [ "$n_eval" -ne 120 ]; then
-  log "ANALYSIS ABORT: $n_eval/120 evaluation results present. Nothing aggregated."
-  echo "ABORT: $n_eval/120 evaluation results. Refusing to aggregate a partial matrix." >&2
+# Guard: refuse to aggregate a partial matrix. §17.10 -- aggregating an incomplete
+# matrix is a WRONG RESULT rather than a failed run.
+#
+# EXACT ENUMERATION, not a glob. An audit of this pipeline's sibling script found
+# that a `find ... -path "*/{arm}_seed*"` pattern is not anchored: a stray tagged
+# run directory (e.g. `reservoir_seed0_clipemb/`, which `--run-tag` exists to
+# create and which §14.11's manual-recovery fallback would produce) also matches,
+# so ONE stray directory can silently stand in for ONE genuinely missing seed and
+# make the guard report a full count. That is precisely the false pass the guard
+# exists to prevent. Enumerating the 20 exact paths removes the ambiguity entirely
+# rather than patching the pattern. See §19.4.
+expected_evals=120
+n_eval=0
+for sel in final best init; do
+  for arm in baseline reservoir; do
+    for s in 0 1 2 3 4 5 6 7 8 9; do
+      for regime in continuous reset128; do
+        [ -f "$REPO/results_v2/$sel/eval_${arm}_seed${s}_${regime}.json" ] && n_eval=$((n_eval+1))
+      done
+    done
+  done
+done
+if [ "$n_eval" -ne "$expected_evals" ]; then
+  log "ANALYSIS ABORT: $n_eval/$expected_evals evaluation results present. Nothing aggregated."
+  echo "ABORT: $n_eval/$expected_evals evaluation results. Refusing to aggregate a partial matrix." >&2
   exit 1
 fi
-log "analysis: guard PASS, 120/120 evaluations"
+log "analysis: guard PASS, $n_eval/$expected_evals evaluations"
+
+# Every final checkpoint must actually LOAD, not merely exist. `save_checkpoint`
+# is a bare `torch.save` with no temp-file-then-`os.replace`, so a process killed
+# mid-write leaves a present-but-corrupt file that a existence-only guard accepts.
+# This machine has already lost power once mid-matrix (§18), which is exactly when
+# that would happen.
+log "analysis: verifying all 20 final checkpoints load"
+if ! "$PY" - <<'PYEOF' >> "$LOG" 2>&1
+import sys, torch
+bad = []
+for arm in ("baseline", "reservoir"):
+    for s in range(10):
+        p = f"checkpoints_v2/{arm}_seed{s}/step_1000064.pt"
+        try:
+            c = torch.load(p, map_location="cpu", weights_only=True)
+            assert c["step"] == 1000064 and c["arm"] == arm and c["seed"] == s, f"label mismatch in {p}"
+            assert c["grad_clip_mode"] == "per-group", f"wrong clip mode in {p}"
+            assert c["embed_init_mode"] == "centered" and c["embed_scale"] == 3.0, f"wrong embed config in {p}"
+        except Exception as exc:
+            bad.append(f"{p}: {type(exc).__name__}: {exc}")
+if bad:
+    print("CHECKPOINT VERIFICATION FAILED:")
+    for b in bad:
+        print("  " + b)
+    sys.exit(1)
+print("all 20 final checkpoints load and self-identify correctly")
+PYEOF
+then
+  log "ANALYSIS ABORT: final-checkpoint verification failed. Nothing aggregated."
+  echo "ABORT: final-checkpoint verification failed, see $LOG" >&2
+  exit 1
+fi
 
 for sel in final best init; do
   log "analysis: aggregating results_v2/$sel"
-  "$PY" -m analysis.aggregate_results \
+  if ! "$PY" -m analysis.aggregate_results \
     --results-dir "results_v2/$sel" --checkpoint-dir checkpoints_v2 \
-    > "$REPO/results_v2_report_$sel.txt" 2>> "$LOG"
-  "$PY" -m analysis.aggregate_results \
+    > "$REPO/results_v2_report_$sel.txt" 2>> "$LOG"; then
+    log "ANALYSIS ABORT: aggregation failed for selection '$sel'"
+    echo "ABORT: aggregation failed for '$sel', see $LOG" >&2
+    exit 1
+  fi
+  if ! "$PY" -m analysis.aggregate_results \
     --results-dir "results_v2/$sel" --checkpoint-dir checkpoints_v2 --json \
-    > "$REPO/results_v2_report_$sel.json" 2>> "$LOG"
+    > "$REPO/results_v2_report_$sel.json" 2>> "$LOG"; then
+    log "ANALYSIS ABORT: JSON aggregation failed for selection '$sel'"
+    echo "ABORT: JSON aggregation failed for '$sel', see $LOG" >&2
+    exit 1
+  fi
 done
 log "analysis: three aggregation reports written"
 
@@ -74,9 +132,13 @@ log "analysis: three aggregation reports written"
 # pre-registered band in code, so the verdict is not a judgement call made while
 # looking at the number (§17.11).
 log "analysis: A7/A9 reservoir health"
-"$PY" -m analysis.reservoir_health \
+if ! "$PY" -m analysis.reservoir_health \
   --checkpoint-dir checkpoints_v2 --arm reservoir --seeds 0-9 \
-  > "$REPO/results_v2_health.txt" 2>> "$LOG"
+  > "$REPO/results_v2_health.txt" 2>> "$LOG"; then
+  log "ANALYSIS ABORT: reservoir_health failed"
+  echo "ABORT: reservoir_health failed, see $LOG" >&2
+  exit 1
+fi
 log "analysis: health written"
 
 log "=== v2 analysis COMPLETE ==="
