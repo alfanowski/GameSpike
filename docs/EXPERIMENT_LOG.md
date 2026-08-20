@@ -1809,3 +1809,44 @@ Checked directly rather than inferred from a process count, because a raw
 eleventh trainer). Extracting `--seed N` from every live command line gives exactly
 one process per seed 0-9, and exactly one launcher. No duplicate seed, no second
 launcher, no orphan from a previous session.
+
+### 17.6 Scope decision: v2 does NOT decompose the two fixes at full scale, and why
+
+Recorded **before any v2 result exists**, so it is a scope decision rather than a
+reaction to a number.
+
+v1's reservoir arm is `global` + `legacy`. v2's is `per-group` + `centered@3.0`.
+**The difference between them therefore confounds the two fixes**: any change in the
+verdict cannot be attributed to one or the other from those two conditions alone.
+Decomposing it at full scale would need a third full-length 10-seed condition
+(`per-group` + `legacy`), i.e. another ~2.2 hours of this machine.
+
+**That third arm is deliberately not being run**, for three reasons:
+
+1. **The decomposition already has an answer at 30% of a run**, from §15.3's 2x2
+   factorial: per-group clipping carries ~96% of the combined effect (+0.061975 of
+   +0.064706), the centred init contributes ~9% alone and ~4% on top of clipping, and
+   the interaction (-0.003143) is smaller than the seed standard deviation (0.0126)
+   and therefore not interpretable. That is a real answer with stated limits, at
+   three seeds and 30% length.
+2. **The mandate is the corrected two-arm comparison.** Adding a third arm puts the
+   primary deliverable at risk of not finishing for a secondary question.
+3. **It would be reported as a decomposition it cannot support anyway.** Three seeds
+   is below this project's own bar (§2); ten seeds on a third arm would fix that, but
+   then honesty requires re-running the full evaluation matrix on it too.
+
+**Stated as a limitation, not hidden:** `RESULTS.md` v2 must say that the v1 -> v2
+comparison changes **two** things at once, that §15.3 attributes almost all of the
+short-horizon effect to clipping, and that a full-scale decomposition was **not run**.
+It is registered here as the obvious next ablation.
+
+### 17.7 The baseline arm is chained to launch automatically, with a guard
+
+The session is unattended, so the baseline arm is chained to start when the reservoir
+launcher's PID exits rather than waiting for a human or an agent to notice.
+
+**The chain is guarded**: it counts `checkpoints_v2/reservoir_seed*/step_1000064.pt`
+and **refuses to launch the baseline arm unless all ten are present**, exiting with a
+message instead. Chaining a second one-hour batch onto a failed first batch only
+doubles the wreckage and destroys the evidence about why the first one failed. Both
+arms run under the identical flag set, from the identical pinned worktree.
