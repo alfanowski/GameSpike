@@ -15,6 +15,8 @@ import pytest
 import torch
 
 import training.train as train_module
+from envs.mario_land_env import MarioLandEnv, OBS_DIM
+from training.novelty_gate import NoveltyGate
 from training.train import build_model, save_checkpoint, load_checkpoint, run_training
 
 ROM_PATH = os.environ.get("MARIO_LAND_ROM_PATH")
@@ -113,3 +115,88 @@ def test_training_actually_updates_parameters(tmp_path, monkeypatch, arm):
         assert any(name.startswith("readout.") for name in changed), (
             f"no readout parameter changed; only {changed} moved"
         )
+
+
+def test_env_persists_across_rollouts(tmp_path, monkeypatch):
+    """One env for the whole run, advancing continuously across rollout boundaries.
+
+    This is the test that would have caught the original design: building a fresh
+    env per rollout still passes every other test in this file (gradients flow,
+    parameters move) while the agent silently re-plays the opening seconds of
+    world 1-1 forever, never seeing the rest of the level.
+    """
+    built = []
+
+    class SpyEnv(MarioLandEnv):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+            self.reset_calls = 0
+            self.observed_step_counts = []
+
+        def reset(self, **kwargs):
+            self.reset_calls += 1
+            return super().reset(**kwargs)
+
+        def step(self, action):
+            out = super().step(action)
+            self.observed_step_counts.append(self._step_count)
+            return out
+
+    monkeypatch.setattr(train_module, "MarioLandEnv", SpyEnv)
+
+    run_training(arm="baseline", rom_path=ROM_PATH, total_steps=32, n_envs=1,
+                 rollout_len=8, checkpoint_every=1_000_000, checkpoint_dir=str(tmp_path))
+
+    assert len(built) == 1, f"{len(built)} envs constructed; the env must outlive the rollouts"
+    env = built[0]
+    # Only the caller's own initial reset. 32 steps from the level start cannot
+    # reach a game over (the episode survives individual deaths -- lives start at
+    # 2+) nor the 3000-step truncation, so any further reset means a rollout
+    # restarted the game.
+    assert env.reset_calls == 1, f"env was reset {env.reset_calls} times, expected once"
+    # The env's own step counter must run 1..32 unbroken THROUGH the four rollout
+    # boundaries, rather than restarting at 1 every 8 steps.
+    assert env.observed_step_counts == list(range(1, 33)), (
+        f"env step count did not advance monotonically across rollouts: "
+        f"{env.observed_step_counts}"
+    )
+    assert env.pyboy is None, "env was not closed at the end of the run"
+
+
+def test_novelty_gate_scores_observations_not_logits(tmp_path, monkeypatch):
+    """The curiosity signal must be built over the 12-dim observation, not the
+    10-dim logits vector: it is part of the reward FUNCTION each arm optimises."""
+    dims = []
+    pushed_shapes = []
+
+    class SpyGate(NoveltyGate):
+        def __init__(self, dim, **kwargs):
+            dims.append(dim)
+            super().__init__(dim=dim, **kwargs)
+
+        def push(self, state_vec):
+            pushed_shapes.append(tuple(state_vec.shape))
+            super().push(state_vec)
+
+    monkeypatch.setattr(train_module, "NoveltyGate", SpyGate)
+    run_training(arm="baseline", rom_path=ROM_PATH, total_steps=8, n_envs=1,
+                 rollout_len=8, checkpoint_every=1_000_000, checkpoint_dir=str(tmp_path))
+
+    assert dims == [OBS_DIM], f"novelty gate built over dim={dims}, expected [{OBS_DIM}]"
+    assert pushed_shapes, "nothing was ever pushed into the novelty gate"
+    assert set(pushed_shapes) == {(OBS_DIM,)}, (
+        f"novelty vectors were {set(pushed_shapes)}, not observations"
+    )
+
+
+def test_final_checkpoint_is_saved_even_when_the_cadence_does_not_land(tmp_path):
+    """checkpoint_every never fires here, so only an unconditional final save can
+    put the run's actual trained weights on disk."""
+    stats = run_training(arm="baseline", rom_path=ROM_PATH, total_steps=16, n_envs=1,
+                         rollout_len=8, checkpoint_every=1_000_000,
+                         checkpoint_dir=str(tmp_path))
+    final = tmp_path / f"step_{stats['final_step']}.pt"
+    assert final.exists(), f"no final checkpoint; directory holds {list(tmp_path.iterdir())}"
+    model, optimizer = build_model("baseline")
+    assert load_checkpoint(model, optimizer, str(final)) == stats["final_step"]

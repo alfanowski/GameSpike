@@ -31,15 +31,20 @@ scientific knob and this task is the one that proves the loop learns at all):
 multi-epoch minibatched updates over the same rollout, advantage normalisation,
 a learning-rate schedule, and multi-process model-driven collection.
 
-KNOWN LIMITATION, flagged rather than buried: every rollout constructs a fresh
-env (that is `collect_rollout_with_model`'s contract) and therefore restarts
-world 1-1 from the beginning, so the agent only ever experiences the first
-`rollout_len` env steps of the level. That is exactly what makes the gradient
-replay in step 3 correct -- collection and replay both start from a fresh model
-state -- so the two are coupled and must be changed together: persisting the env
-across rollouts requires snapshotting the recurrent state at rollout start and
-replaying from that snapshot instead of from `init_state_fn`. Fix both together
-before running the real baseline-vs-reservoir comparison at long horizons.
+TWO LIFETIMES, deliberately different -- this is the part that is easy to get
+wrong, so it is stated explicitly:
+
+  * The ENV persists for the whole run. It is constructed once, before the loop,
+    and closed once, after it. An earlier version built a fresh env per rollout,
+    which restarted world 1-1 at every rollout boundary: the agent could never
+    experience more than `rollout_len` env steps of the level however long
+    training ran, which would have made the eventual arm comparison meaningless.
+  * The MODEL's recurrent state is reset at every rollout boundary, on the
+    collection side and identically in the replay -- standard truncated BPTT at
+    a fixed sequence boundary. These two lifetimes are independent: persisting
+    the emulator does not require persisting (or snapshotting) recurrent state,
+    and resetting model state at the same logical point on both sides is exactly
+    what keeps the replay bit-exact.
 """
 import argparse
 import os
@@ -169,69 +174,97 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     start_step = 0
     if resume_from and os.path.exists(resume_from):
         start_step = load_checkpoint(model, optimizer, resume_from)
-    novelty_gate = NoveltyGate(dim=N_ACTIONS, capacity=512, k=8)
+    # dim=OBS_DIM: novelty is scored on the game state the agent reached, not on
+    # the policy's logits. See collect_rollout_with_model's own note -- scoring
+    # logits changes the reward FUNCTION per arm, not merely the reported metric.
+    novelty_gate = NoveltyGate(dim=OBS_DIM, capacity=512, k=8)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     step = start_step
     last_checkpoint_step = start_step
     stats = {"mean_reward": 0.0, "mean_extrinsic_reward": 0.0, "final_step": step, "updates": 0}
-    while step < total_steps:
-        rollout = collect_rollout_with_model(
-            env_ctor=lambda: MarioLandEnv(rom_path=rom_path), model=model,
-            model_state_fns=(model._init_state_fn, model._step_fn),
-            n_steps=rollout_len, novelty_gate=novelty_gate, novelty_coef=novelty_coef,
-        )
+    # ONE env for the whole run: rollouts continue the same episode instead of
+    # restarting world 1-1 every `rollout_len` steps.
+    env = MarioLandEnv(rom_path=rom_path)
+    try:
+        obs, _ = env.reset()
+        while step < total_steps:
+            rollout = collect_rollout_with_model(
+                env=env, obs=obs, model=model,
+                model_state_fns=(model._init_state_fn, model._step_fn),
+                n_steps=rollout_len, novelty_gate=novelty_gate, novelty_coef=novelty_coef,
+            )
+            obs = rollout["final_obs"]  # next rollout resumes exactly where this one stopped
 
-        rewards = torch.tensor(rollout["rewards"], dtype=torch.float32)
-        extrinsic_rewards = torch.tensor(rollout["extrinsic_rewards"], dtype=torch.float32)
-        dones = torch.tensor(rollout["dones"], dtype=torch.float32)
-        # (T+1,): the stored per-step values plus the bootstrap for the state the
-        # rollout stopped in (0.0 if it stopped because the episode ended).
-        values = torch.tensor(rollout["values"] + [rollout["last_value"]], dtype=torch.float32)
-        advantages, returns = compute_gae(rewards, values, dones, gamma=gamma, lam=lam)
+            rewards = torch.tensor(rollout["rewards"], dtype=torch.float32)
+            extrinsic_rewards = torch.tensor(rollout["extrinsic_rewards"], dtype=torch.float32)
+            dones = torch.tensor(rollout["dones"], dtype=torch.float32)
+            truncation_values = torch.tensor(rollout["truncation_values"], dtype=torch.float32)
+            # (T+1,): the stored per-step values plus the bootstrap for the state
+            # the rollout stopped in (0.0 if the episode ended on the last step,
+            # where GAE multiplies it by not_done = 0 anyway).
+            values = torch.tensor(rollout["values"] + [rollout["last_value"]], dtype=torch.float32)
+            # Truncation bootstrap. `dones` cuts the GAE recursion at BOTH kinds
+            # of boundary (the next buffer entry belongs to a different episode
+            # either way), which would silently zero the future of a step-limit
+            # truncation -- an episode that was still very much alive. Folding
+            # gamma * V(s_T) into that step's reward restores exactly the delta a
+            # real bootstrap would have produced, without changing compute_gae's
+            # (T+1,)-values contract. Zero everywhere except truncated steps, so
+            # this is a no-op on rollouts that contain none.
+            gae_rewards = rewards + gamma * truncation_values
+            advantages, returns = compute_gae(gae_rewards, values, dones, gamma=gamma, lam=lam)
 
-        obs_seq = torch.as_tensor(np.asarray(rollout["obs"], dtype=np.float32))
-        actions = torch.as_tensor(np.asarray(rollout["actions"], dtype=np.int64))
-        old_log_probs = torch.tensor(rollout["log_probs"], dtype=torch.float32)
+            obs_seq = torch.as_tensor(np.asarray(rollout["obs"], dtype=np.float32))
+            actions = torch.as_tensor(np.asarray(rollout["actions"], dtype=np.int64))
+            old_log_probs = torch.tensor(rollout["log_probs"], dtype=torch.float32)
 
-        new_logits, new_values = replay_rollout(model, obs_seq, dones)
-        # log-probability of the SAME actions that were actually taken, under the
-        # freshly recomputed distribution.
-        new_log_probs = torch.distributions.Categorical(logits=new_logits).log_prob(actions)
+            new_logits, new_values = replay_rollout(model, obs_seq, dones)
+            # log-probability of the SAME actions that were actually taken, under
+            # the freshly recomputed distribution.
+            new_log_probs = torch.distributions.Categorical(logits=new_logits).log_prob(actions)
 
-        p_loss = ppo_policy_loss(new_log_probs, old_log_probs, advantages, clip_eps=clip_eps)
-        v_loss = value_loss(new_values, returns)
-        entropy = entropy_bonus(new_logits)
-        total_loss = p_loss + value_coef * v_loss - entropy_coef * entropy
+            p_loss = ppo_policy_loss(new_log_probs, old_log_probs, advantages, clip_eps=clip_eps)
+            v_loss = value_loss(new_values, returns)
+            entropy = entropy_bonus(new_logits)
+            total_loss = p_loss + value_coef * v_loss - entropy_coef * entropy
 
-        optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            [p for p in model.parameters() if p.requires_grad], MAX_GRAD_NORM)
-        optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            total_loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad], MAX_GRAD_NORM)
+            optimizer.step()
 
-        step += rollout_len
-        stats = {
-            # `mean_reward` is the optimised reward (extrinsic + novelty), which
-            # is what the loss actually saw. `mean_extrinsic_reward` is the one to
-            # compare arms on: the novelty term pays out for diverse logits, and
-            # the two arms differ in exactly that, so it must not be part of the
-            # scoreboard.
-            "mean_reward": float(rewards.mean().item()),
-            "mean_extrinsic_reward": float(extrinsic_rewards.mean().item()),
-            "final_step": step,
-            "updates": stats["updates"] + 1,
-            "policy_loss": float(p_loss.item()),
-            "value_loss": float(v_loss.item()),
-            "entropy": float(entropy.item()),
-            "total_loss": float(total_loss.item()),
-            # Pre-clip gradient norm: the cheapest honest evidence that the
-            # update was real rather than a no-op.
-            "grad_norm": float(grad_norm.item()),
-        }
-        if step - last_checkpoint_step >= checkpoint_every:
-            save_checkpoint(model, optimizer, step, os.path.join(checkpoint_dir, f"step_{step}.pt"))
-            last_checkpoint_step = step
+            step += rollout_len
+            stats = {
+                # `mean_reward` is the optimised reward (extrinsic + novelty),
+                # which is what the loss actually saw. `mean_extrinsic_reward` is
+                # the one to compare arms on: the novelty term is an exploration
+                # subsidy, not a score, so it must not be part of the scoreboard.
+                "mean_reward": float(rewards.mean().item()),
+                "mean_extrinsic_reward": float(extrinsic_rewards.mean().item()),
+                "final_step": step,
+                "updates": stats["updates"] + 1,
+                "policy_loss": float(p_loss.item()),
+                "value_loss": float(v_loss.item()),
+                "entropy": float(entropy.item()),
+                "total_loss": float(total_loss.item()),
+                # Pre-clip gradient norm: the cheapest honest evidence that the
+                # update was real rather than a no-op.
+                "grad_norm": float(grad_norm.item()),
+            }
+            if step - last_checkpoint_step >= checkpoint_every:
+                save_checkpoint(model, optimizer, step,
+                                os.path.join(checkpoint_dir, f"step_{step}.pt"))
+                last_checkpoint_step = step
+    finally:
+        env.close()
+    # Unconditional final save: `total_steps` is rarely an exact multiple of
+    # `checkpoint_every`, and without this the last (i.e. best-trained) weights of
+    # a run would never reach disk. Same naming scheme as the periodic saves, so
+    # --resume-from takes it directly; re-writing an identical file is harmless
+    # when the periodic save already landed on this exact step.
+    save_checkpoint(model, optimizer, step, os.path.join(checkpoint_dir, f"step_{step}.pt"))
     return stats
 
 

@@ -80,9 +80,23 @@ def collect_rollout_random_policy(rom_path: str, n_envs: int, n_steps: int) -> d
     return {"obs": obs, "actions": actions, "rewards": rewards, "dones": dones}
 
 
-def collect_rollout_with_model(env_ctor, model, model_state_fns, n_steps: int,
+def collect_rollout_with_model(env, obs, model, model_state_fns, n_steps: int,
                                novelty_gate: NoveltyGate, novelty_coef: float = 0.05) -> dict:
-    """Single-process rollout driven by a real policy-value model.
+    """Collect `n_steps` from an ALREADY-RUNNING env, driven by a real model.
+
+    LIFECYCLE: the caller owns the env. It constructs it, performs the initial
+    `reset()`, passes the resulting observation in as `obs`, feeds `final_obs`
+    back in on the next call, and closes it when training ends. This function
+    calls `env.reset()` ONLY when an episode genuinely ends. The earlier design
+    took an `env_ctor` and built/closed a fresh env per call, which silently
+    restarted world 1-1 at every rollout boundary -- so however long training
+    ran, the agent could never experience more than `n_steps` of the level.
+
+    MODEL STATE, by contrast, IS reset at every rollout boundary, here and
+    identically in the gradient replay: standard truncated BPTT at a fixed
+    sequence boundary. The two are independent -- only the emulator persists --
+    and resetting model state on both sides at the same logical point is what
+    keeps the replay bit-exact against collection.
 
     `model_state_fns = (init_state_fn, step_fn)` so this works for both
     PolicyValueGRU and PolicyValueReservoir without depending on either
@@ -91,76 +105,103 @@ def collect_rollout_with_model(env_ctor, model, model_state_fns, n_steps: int,
     `(logits, value, *next_state)` -- the trailing elements being whatever that
     model threads forward (a GRU hidden state; the reservoir's mem/spk/window).
 
-    Episode boundaries reset BOTH the env and the model state, so no recurrent
-    state ever leaks across an episode.
-
     The whole loop runs under `torch.no_grad()`: every value this function keeps
     is turned into a Python float, so the PPO-relevant quantities are frozen
     "old" values by construction, and building an autograd graph here would only
     pin the entire rollout's activations in memory (the reservoir threads its
     state forward, so the graph would span all n_steps).
 
-    Returns a dict with `obs`, `actions`, `rewards`, `dones`, `log_probs`,
-    `values` (each length n_steps), plus `extrinsic_rewards` and `last_value`.
+    Returns a dict of per-step lists (`obs`, `actions`, `rewards`,
+    `extrinsic_rewards`, `dones`, `terminateds`, `truncateds`,
+    `truncation_values`, `log_probs`, `values`), plus scalars `last_value` and
+    `final_obs`.
 
-    `rewards` is what PPO optimises: extrinsic + novelty_coef * novelty.
-    `extrinsic_rewards` is the env's reward alone, kept separately because it is
-    the only fair scoreboard for the baseline-vs-reservoir comparison -- the
-    intrinsic term rewards an arm for having diverse logits, which is precisely
-    the kind of thing the two arms differ in, so scoring the experiment on the
-    combined reward would confound the result.
+    TERMINATED vs TRUNCATED are kept apart, not collapsed into `done`, because
+    Task 9's `compute_gae` contract treats them differently: a true terminal
+    state has no future to bootstrap from (value 0.0), while a step-limit
+    truncation is an ongoing episode whose future must be bootstrapped with a
+    real critic estimate V(s_T). `dones` (their OR) is still returned, because
+    the GAE recursion and the replay's state resets must both cut at either kind
+    of boundary -- what differs is only the value that gets bootstrapped.
 
-    `last_value` is the bootstrap V(s_T) that
-    compute_gae wants as the (T+1)-th value -- the critic's own estimate of the
-    state the rollout stopped in, or exactly 0.0 when the final step ended the
-    episode (there is no future to bootstrap from). Reusing values[-1] as the
-    bootstrap instead, as a stand-in, would silently bias every truncated
-    rollout's last few advantages.
+    `truncation_values[t]` is V(s_{t+1}) at a truncated (non-terminal) step and
+    0.0 everywhere else. The caller folds `gamma * truncation_values` into the
+    reward before calling compute_gae: with `dones[t] = 1` the GAE recursion
+    zeroes its own next-state term, so adding gamma*V(s_T) to the reward
+    reproduces the correct delta exactly (see the identity test in
+    tests/test_rollout.py). That is how a mid-rollout truncation gets a proper
+    bootstrap without changing compute_gae's (T+1,)-values contract.
+
+    `last_value` is the end-of-rollout bootstrap: V of the state the rollout
+    stopped in when it stopped mid-episode, or 0.0 when the final step ended the
+    episode (in which case GAE multiplies it by not_done = 0 anyway).
     """
-    env = env_ctor()
     init_state_fn, step_fn = model_state_fns
     device = torch.device("cpu")
-    obs_buf, act_buf, rew_buf, done_buf, logp_buf, val_buf = [], [], [], [], [], []
-    ext_rew_buf = []
-    try:
-        obs, _ = env.reset()
-        state = init_state_fn(1, device)
-        done = False
-        with torch.no_grad():
-            for _ in range(n_steps):
-                obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
-                logits, value, *state = step_fn(model, obs_t, state)
-                dist = torch.distributions.Categorical(logits=logits)
-                action = dist.sample()
-                log_prob = dist.log_prob(action)
-                # The novelty signal summarises the policy's own reaction to the
-                # state (the logits vector), matching NoveltyGate's dim=n_actions.
-                # Score BEFORE push, so a state is never counted as its own
-                # nearest neighbour (which would drive every score to 0).
-                state_vec = logits.squeeze(0)
-                novelty = novelty_gate.score(state_vec)
-                novelty_gate.push(state_vec)
-                next_obs, reward, terminated, truncated, _ = env.step(int(action.item()))
-                done = bool(terminated or truncated)
-                obs_buf.append(obs)
-                act_buf.append(int(action.item()))
-                ext_rew_buf.append(float(reward))
-                rew_buf.append(float(reward) + novelty_coef * novelty)
-                done_buf.append(float(done))
-                logp_buf.append(float(log_prob.item()))
-                val_buf.append(float(value.item()))
-                obs = next_obs
-                if done:
-                    obs, _ = env.reset()
-                    state = init_state_fn(1, device)
-            if done or n_steps == 0:
-                last_value = 0.0
+    obs_buf, act_buf, rew_buf, ext_rew_buf = [], [], [], []
+    done_buf, term_buf, trunc_buf, trunc_val_buf = [], [], [], []
+    logp_buf, val_buf = [], []
+    state = init_state_fn(1, device)
+    episode_ended = False
+    with torch.no_grad():
+        for _ in range(n_steps):
+            obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+            logits, value, *state = step_fn(model, obs_t, state)
+            dist = torch.distributions.Categorical(logits=logits)
+            action = dist.sample()
+            log_prob = dist.log_prob(action)
+            next_obs, reward, terminated, truncated, _ = env.step(int(action.item()))
+            terminated, truncated = bool(terminated), bool(truncated)
+
+            # Curiosity scores the OBSERVATION the agent actually reached -- the
+            # game state -- not the policy's logits. Scoring logits rewarded
+            # "having an unusual action distribution" rather than "seeing an
+            # unusual game state", which is (a) not curiosity and (b) a moving
+            # target: the buffer goes stale on every policy update, because the
+            # same state starts producing different logits, so stored neighbours
+            # stop meaning anything. Worse, the two arms differ in exactly that
+            # property, so it perturbed the reward FUNCTION per arm, not just the
+            # reported metric. Score BEFORE push, so a state is never counted as
+            # its own nearest neighbour.
+            novelty_vec = torch.as_tensor(next_obs, dtype=torch.float32)
+            novelty = novelty_gate.score(novelty_vec)
+            novelty_gate.push(novelty_vec)
+
+            # A step-limit truncation is an ongoing episode: its future is worth
+            # a real critic estimate. Computed here, BEFORE the reset, because it
+            # needs the pre-reset observation and the recurrent state that
+            # produced it.
+            truncation_value = 0.0
+            if truncated and not terminated:
+                boot_t = torch.as_tensor(next_obs, dtype=torch.float32).unsqueeze(0)
+                _, trunc_value, *_ = step_fn(model, boot_t, state)
+                truncation_value = float(trunc_value.item())
+
+            episode_ended = terminated or truncated
+            obs_buf.append(obs)
+            act_buf.append(int(action.item()))
+            ext_rew_buf.append(float(reward))
+            rew_buf.append(float(reward) + novelty_coef * novelty)
+            term_buf.append(float(terminated))
+            trunc_buf.append(float(truncated))
+            done_buf.append(float(episode_ended))
+            trunc_val_buf.append(truncation_value)
+            logp_buf.append(float(log_prob.item()))
+            val_buf.append(float(value.item()))
+
+            if episode_ended:
+                obs, _ = env.reset()
+                state = init_state_fn(1, device)
             else:
-                obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
-                _, boot_value, *_ = step_fn(model, obs_t, state)
-                last_value = float(boot_value.item())
-    finally:
-        env.close()
-    return dict(obs=obs_buf, actions=act_buf, rewards=rew_buf, dones=done_buf,
-                log_probs=logp_buf, values=val_buf, extrinsic_rewards=ext_rew_buf,
-                last_value=last_value)
+                obs = next_obs
+        if episode_ended or n_steps == 0:
+            last_value = 0.0
+        else:
+            obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+            _, boot_value, *_ = step_fn(model, obs_t, state)
+            last_value = float(boot_value.item())
+    return dict(obs=obs_buf, actions=act_buf, rewards=rew_buf,
+                extrinsic_rewards=ext_rew_buf, dones=done_buf,
+                terminateds=term_buf, truncateds=trunc_buf,
+                truncation_values=trunc_val_buf, log_probs=logp_buf,
+                values=val_buf, last_value=last_value, final_obs=obs)
