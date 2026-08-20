@@ -174,7 +174,7 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
 
     step = start_step
     last_checkpoint_step = start_step
-    stats = {"mean_reward": 0.0, "final_step": step, "updates": 0}
+    stats = {"mean_reward": 0.0, "mean_extrinsic_reward": 0.0, "final_step": step, "updates": 0}
     while step < total_steps:
         rollout = collect_rollout_with_model(
             env_ctor=lambda: MarioLandEnv(rom_path=rom_path), model=model,
@@ -183,6 +183,7 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
         )
 
         rewards = torch.tensor(rollout["rewards"], dtype=torch.float32)
+        extrinsic_rewards = torch.tensor(rollout["extrinsic_rewards"], dtype=torch.float32)
         dones = torch.tensor(rollout["dones"], dtype=torch.float32)
         # (T+1,): the stored per-step values plus the bootstrap for the state the
         # rollout stopped in (0.0 if it stopped because the episode ended).
@@ -211,7 +212,13 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
 
         step += rollout_len
         stats = {
+            # `mean_reward` is the optimised reward (extrinsic + novelty), which
+            # is what the loss actually saw. `mean_extrinsic_reward` is the one to
+            # compare arms on: the novelty term pays out for diverse logits, and
+            # the two arms differ in exactly that, so it must not be part of the
+            # scoreboard.
             "mean_reward": float(rewards.mean().item()),
+            "mean_extrinsic_reward": float(extrinsic_rewards.mean().item()),
             "final_step": step,
             "updates": stats["updates"] + 1,
             "policy_loss": float(p_loss.item()),

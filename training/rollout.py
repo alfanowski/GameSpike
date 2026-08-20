@@ -101,7 +101,16 @@ def collect_rollout_with_model(env_ctor, model, model_state_fns, n_steps: int,
     state forward, so the graph would span all n_steps).
 
     Returns a dict with `obs`, `actions`, `rewards`, `dones`, `log_probs`,
-    `values` (each length n_steps), plus `last_value`: the bootstrap V(s_T) that
+    `values` (each length n_steps), plus `extrinsic_rewards` and `last_value`.
+
+    `rewards` is what PPO optimises: extrinsic + novelty_coef * novelty.
+    `extrinsic_rewards` is the env's reward alone, kept separately because it is
+    the only fair scoreboard for the baseline-vs-reservoir comparison -- the
+    intrinsic term rewards an arm for having diverse logits, which is precisely
+    the kind of thing the two arms differ in, so scoring the experiment on the
+    combined reward would confound the result.
+
+    `last_value` is the bootstrap V(s_T) that
     compute_gae wants as the (T+1)-th value -- the critic's own estimate of the
     state the rollout stopped in, or exactly 0.0 when the final step ended the
     episode (there is no future to bootstrap from). Reusing values[-1] as the
@@ -112,6 +121,7 @@ def collect_rollout_with_model(env_ctor, model, model_state_fns, n_steps: int,
     init_state_fn, step_fn = model_state_fns
     device = torch.device("cpu")
     obs_buf, act_buf, rew_buf, done_buf, logp_buf, val_buf = [], [], [], [], [], []
+    ext_rew_buf = []
     try:
         obs, _ = env.reset()
         state = init_state_fn(1, device)
@@ -134,6 +144,7 @@ def collect_rollout_with_model(env_ctor, model, model_state_fns, n_steps: int,
                 done = bool(terminated or truncated)
                 obs_buf.append(obs)
                 act_buf.append(int(action.item()))
+                ext_rew_buf.append(float(reward))
                 rew_buf.append(float(reward) + novelty_coef * novelty)
                 done_buf.append(float(done))
                 logp_buf.append(float(log_prob.item()))
@@ -151,4 +162,5 @@ def collect_rollout_with_model(env_ctor, model, model_state_fns, n_steps: int,
     finally:
         env.close()
     return dict(obs=obs_buf, actions=act_buf, rewards=rew_buf, dones=done_buf,
-                log_probs=logp_buf, values=val_buf, last_value=last_value)
+                log_probs=logp_buf, values=val_buf, extrinsic_rewards=ext_rew_buf,
+                last_value=last_value)
