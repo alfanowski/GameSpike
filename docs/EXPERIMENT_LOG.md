@@ -2088,3 +2088,134 @@ ran through the incident untouched, and the matrix was at 42% when it happened.
 `/tmp/gs_pipeline.sh`, launched `nohup`-ed and disowned (PID 34500), which waits on the
 reservoir launcher and then runs baseline -> evaluation -> aggregation -> A7/A9, with a
 `find`-based guard on every arrow and a timestamped log at `pipeline_v2.log`.
+
+## 18. Incident at 23:38:53 — the machine lost power, and the reservoir arm is being RESTARTED rather than resumed
+
+A different and larger incident than §17.12's, four hours later and with a different
+cause. Recorded in the same detail, and — because the recovery involves discarding
+90% of a completed compute batch — **the decision is written here before the restart
+is launched**, not afterwards as a justification.
+
+### 18.1 What happened, with the evidence
+
+**The whole machine rebooted at 23:38:53 CEST.** This is not inference:
+
+```
+sysctl kern.boottime  ->  { sec = 1787261933 } Thu Aug 20 23:38:53 2026
+```
+
+Verified at 23:46 with the system 8 minutes old, zero training processes alive, and
+no `python`/`train.py`/`pyboy` in `ps aux`. Distinguishing features from §17.12's
+harness reap, all checked rather than assumed:
+
+- **Every process on the machine died, not just the chained automation.** The
+  reservoir launcher (PID 30003), which §17.12 records as having survived the 21:37
+  reap precisely because it was `nohup`-ed into an orphan, is gone. Orphaning does not
+  survive a reboot and was never expected to; **checkpointing is what covers this
+  failure mode, and it did.**
+- **It was not a kernel panic.** `/Library/Logs/DiagnosticReports/` contains no
+  `.panic` file, and the user DiagnosticReports directory's newest entry is from
+  01:47, twenty-two hours earlier. A panic under the 10-way training load would have
+  been a reason to reduce `--jobs` on the restart; the absence of one is why the
+  restart runs at the same `--jobs 10`.
+- **The agent session driving the run died with it.** No process, no resumable state,
+  and `/tmp` was cleared — taking `/tmp/gs_pipeline.sh` (§17.12's remediation) with
+  it. **That is the reusable lesson: a recovery script that lives in `/tmp` does not
+  survive the incident class it exists to recover from.** It is replaced by a
+  committed one (§18.4).
+- No `crontab` and no relevant LaunchAgent existed, so nothing auto-resumed anything.
+
+### 18.2 What was lost, precisely — and what was not
+
+**Nothing was corrupted.** All ten `checkpoints_v2/reservoir_seed{0-9}/step_900864.pt`
+were loaded with `torch.load(..., weights_only=True)`, matching `load_checkpoint`'s own
+call. **All ten load cleanly**, and every one records the intended v2 configuration
+(`arm=reservoir`, the right seed, `grad_clip_mode='per-group'`,
+`embed_init_mode='centered'`, `embed_scale=3.0`, `step=900864`, 42 model tensors, 31
+optimizer state entries). `save_checkpoint` is a bare `torch.save` with no
+temp-file-then-`os.replace`, so a torn write was physically possible; it did not
+happen. The last checkpoint mtimes cluster at 23:27:27–23:28:53, i.e. ten minutes
+before the power cut, which is why.
+
+**The runs were at ~95.7%, not 90%.** The checkpoints stop at step 900,864 but the
+`train_log.jsonl` files run to **step 952,832–961,280 (updates 7,444–7,510 of 7,813)**.
+`--checkpoint-every 100000` means the next checkpoint would have been the final one, so
+**between 51,968 and 60,416 steps per seed of real, logged training exist as a learning
+curve whose model state does not exist on disk.** That gap is what makes a resume
+messier than it first looks (§18.3, point 2).
+
+Untouched and verified: v1's 20 runs (all at `step_1000064.pt`), the 20 v2 untrained
+controls at `checkpoints_v2_init/` (§14.12), and every committed artefact.
+
+### 18.3 Decision: the reservoir arm is RESTARTED from step 0, all ten seeds
+
+The cheap option was `--resume-from checkpoints_v2/reservoir_seed{n}/step_900864.pt`
+for each seed — roughly 13 minutes of compute against ~2.2 hours for a restart. **It is
+being rejected**, and the reasoning is recorded because rejecting a 10x-cheaper option
+needs one.
+
+1. **The published recipe must reproduce the published numbers.** §14.11's Step 2 is
+   the documented command for the v2 reservoir arm. A resumed arm is not what that
+   command produces, so the v2 numbers would be reproducible only by an undocumented
+   bespoke recovery procedure. That is a reproducibility defect in the primary
+   deliverable, traded for two hours of a machine that is otherwise idle.
+2. **A resume would corrupt the arm's own learning curve.** `_append_log` opens
+   `train_log.jsonl` in append mode, and a resumed run restarts its update counter at
+   1. Resuming from step 900,864 would therefore append a second set of records for
+   steps 900,992–~956,800 — **the same steps appearing twice with different values**,
+   plus 775 lines whose `update` index collides with the run's own first 775. Repairing
+   that means editing raw experimental data by hand, on the artefact the write-up's
+   learning curves come from. Not worth doing to save two hours.
+3. **§2's determinism property would break for this arm.** §2 states that a run's state
+   at any intermediate checkpoint is bit-identical to what a shorter run would have
+   produced. §14.14 and §17.8 both cash that property in (the pilot is a bit-identical
+   *prefix* of the v2 reservoir runs, verified twice at 0 mismatches). `--resume-from`
+   restores model and optimizer state but **not** the emulator state, the RNG stream
+   position, or the `NoveltyGate` buffer — §14.14 already recorded exactly this, when it
+   refused to resume the three pilot seeds into the v2 matrix for the same reason.
+4. **It would put a protocol difference between the two arms of the mandatory control.**
+   The baseline arm has not started and will run uninterrupted. A resumed reservoir arm
+   differs from it by an `env.reset()` at 90%, a restarted RNG stream, and ~512 steps of
+   elevated intrinsic reward while the novelty buffer refills. Each is individually
+   negligible; the objection is that **the control exists to make the two arms differ in
+   exactly one thing**, and §14.14 already rejected resume-induced heterogeneity when
+   accepting it would have been free.
+5. **Nothing unique is lost, and the restart is itself a measurement.** Determinism
+   means the discarded prefix regenerates bit-identically. The crashed runs are
+   therefore **preserved, not deleted** (moved to `checkpoints_v2_crashed/`, 292 MB,
+   gitignored) so the fresh logs can be diffed against them over the ~7,038 overlapping
+   updates. Zero mismatches would be a **third independent confirmation** of the
+   determinism property, on data produced across a reboot and a different process
+   generation — stronger evidence than either previous check.
+
+**Cost if wrong.** ~2.2 hours, and greater exposure to a second interruption inside
+that window. Both are mitigated rather than accepted: the crashed checkpoints are
+preserved, so `--resume-from` remains available as a fallback if the schedule tightens,
+and §18.4's measures reduce the exposure.
+
+**What is NOT being changed:** the flag set, `--jobs 10`, the pinned worktree
+(§17.1, commit `dc966a3`), and the untrained controls. The restart re-runs the same
+experiment, not a revised one.
+
+### 18.4 Resilience measures added, and the ones deliberately not added
+
+Second real interruption in one night, so the question of a permanent fix is live. The
+measures taken are the cheap ones that address the observed failures directly:
+
+- **The pipeline script is committed to the repository** (`scripts/run_v2_pipeline.sh`)
+  rather than written into `/tmp`. §17.12's remediation was lost to the very reboot it
+  would have been useful for. A committed script survives, is legible in git, and is
+  reviewable — the same argument §14.10 made for committing the training launcher.
+- **The chain runs under `caffeinate -is`**, so an idle-sleep cannot suspend a
+  multi-hour unattended batch.
+- **The chain is `nohup`-ed and disowned from a short-lived wrapper**, per §17.12's
+  lesson 1, so a harness reap cannot kill it. `setsid` still does not exist on macOS
+  (lesson 2), and every completeness guard is `find`-based (lesson 3).
+
+**Deliberately NOT added: a launchd watchdog that resumes training after a reboot.**
+It would have saved nothing here — §18.3 explains why this interruption warranted a
+restart rather than a resume, so an automatic resumer would have produced exactly the
+artefact this entry rejects. It is also unattended automation that writes into the
+experiment's output directories with no one watching, which is the hazard class §9 and
+§17.12 are both about. The priority is a genuine v2 result, not infrastructure for its
+own sake.
