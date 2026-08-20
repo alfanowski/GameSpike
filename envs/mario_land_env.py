@@ -70,6 +70,13 @@ MAX_BACKWARD_PIXELS_PER_FRAME = 16.0
 # from the game-over -> title -> attract-demo sequence, where the emulator keeps
 # producing plausible-looking state that the player does not control at all (the
 # exact failure mode envs/boot.py exists to prevent).
+#
+# DO NOT relax this to "terminate only on the death after lives hit 0" without
+# revisiting the level-completion check below. The two rules are coupled: the
+# completion check reads a world/level *change* as "level finished", which is only
+# safe because the episode can never reach the game over. Measured: after a game
+# over the ROM returns to the title and its attract demo then plays world 1-2, so
+# the world/level byte changes with no level ever having been completed.
 _GAME_OVER_LIVES = 0
 
 # --- observation normalisation ------------------------------------------------
