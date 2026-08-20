@@ -13,3 +13,6 @@ checkpoints_init/
 *.gbc
 .pytest_cache/
 .DS_Store
+
+# Worktree metadata created by the agent harness, not project source.
+.claude/worktrees/
