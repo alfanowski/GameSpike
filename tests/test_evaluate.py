@@ -216,6 +216,84 @@ def test_reservoir_arm_evaluates_too(tmp_path):
     assert len(results["extrinsic_returns"]) == 2
 
 
+def test_wrong_arm_checkpoint_is_rejected_before_the_shape_error(tmp_path):
+    """Finding I5's other half, from the evaluation side: a reservoir checkpoint
+    handed to `--arm baseline` must say so, not fail inside torch's load_state_dict
+    with an unexpected-key dump."""
+    with pytest.raises(ValueError, match="arm mismatch"):
+        run_evaluation(arm="baseline", checkpoint_path=_checkpoint(tmp_path, "reservoir"),
+                       rom_path=ROM_PATH, n_episodes=1, max_steps_per_episode=EVAL_STEPS)
+
+
+def _count_state_inits(monkeypatch):
+    """Spy that records every recurrent-state (re-)initialisation the harness makes.
+
+    Counting the resets directly, rather than diffing the two runs' action traces:
+    with an UNTRAINED policy the logits barely move when the hidden state changes,
+    so the same multinomial draw usually lands in the same bin and identical traces
+    prove nothing either way. That version of this test passed with the reset
+    disabled, depending only on what global RNG state the rest of the suite had left
+    behind. This one is exact.
+    """
+    calls = []
+    real_build_model = evaluate_module.build_model
+
+    def spy_build_model(arm, **kwargs):
+        model, optimizer = real_build_model(arm, **kwargs)
+        real_init = model._init_state_fn
+
+        def spy_init(batch_size, device):
+            calls.append(1)
+            return real_init(batch_size, device)
+
+        model._init_state_fn = spy_init
+        return model, optimizer
+
+    monkeypatch.setattr(evaluate_module, "build_model", spy_build_model)
+    return calls
+
+
+def test_by_default_state_is_initialised_once_per_episode_and_never_reset(tmp_path,
+                                                                         monkeypatch):
+    """The default regime, pinned so the train/eval mismatch documented in
+    evaluate.py's docstring stays a stated fact rather than drifting silently."""
+    calls = _count_state_inits(monkeypatch)
+    results = run_evaluation(arm="baseline", checkpoint_path=_checkpoint(tmp_path),
+                             rom_path=ROM_PATH, n_episodes=3,
+                             max_steps_per_episode=EVAL_STEPS)
+    assert results["state_reset_interval"] is None
+    assert len(calls) == 3, (
+        f"{len(calls)} state inits across 3 episodes; the default must be exactly one "
+        "per episode and none within one"
+    )
+
+
+def test_state_reset_interval_resets_on_the_requested_cadence(tmp_path, monkeypatch):
+    """`state_reset_interval` exists so the matched-regime counterpart of the default
+    measurement can actually be RUN, not merely warned about -- so it has to drive
+    real resets, on training's own cadence, not just land in the results dict."""
+    calls = _count_state_inits(monkeypatch)
+    results = run_evaluation(arm="baseline", checkpoint_path=_checkpoint(tmp_path),
+                             rom_path=ROM_PATH, n_episodes=2,
+                             max_steps_per_episode=EVAL_STEPS, state_reset_interval=4)
+
+    assert results["state_reset_interval"] == 4
+    # One init per episode, plus one every 4 steps within it.
+    expected = results["n_episodes"] + sum(int(n) // 4 for n in results["episode_lengths"])
+    assert len(calls) == expected, (
+        f"{len(calls)} state inits, expected {expected} for episode lengths "
+        f"{results['episode_lengths']} at a reset interval of 4"
+    )
+    assert len(calls) > results["n_episodes"], "no within-episode reset happened at all"
+
+
+def test_state_reset_interval_rejects_nonsense(tmp_path):
+    with pytest.raises(ValueError, match="state_reset_interval"):
+        run_evaluation(arm="baseline", checkpoint_path=_checkpoint(tmp_path),
+                       rom_path=ROM_PATH, n_episodes=1,
+                       max_steps_per_episode=EVAL_STEPS, state_reset_interval=0)
+
+
 def test_combined_return_contains_the_novelty_subsidy(tmp_path):
     """`mean_extrinsic_return` is the scoreboard; `mean_combined_return` is the
     reward the loss actually optimised. Reporting the same number twice would

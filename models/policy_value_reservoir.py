@@ -4,6 +4,15 @@ import torch.nn as nn
 from models.spiking_reservoir import SpikingReservoir
 from models.actor_critic_readout import ActorCriticReadout
 
+# Reservoir buffers that are transient STATE rather than frozen WEIGHTS, and so are
+# excluded from the bit-identity snapshot below. snntorch's Leaky keeps its membrane
+# slot in a buffer named `lif.mem`: it is mutated by any forward pass (including the
+# pure-inference ones during rollout collection) and even changes shape, from `(0,)`
+# at construction to `(B, N)` after the first call. This codebase never reads it --
+# `mem` is threaded explicitly through `SpikingReservoir.step` -- so including it
+# would make the tripwire fire on every normal forward pass.
+TRANSIENT_RESERVOIR_BUFFERS = frozenset({"lif.mem"})
+
 
 class PolicyValueReservoir(nn.Module):
     """embedding (trainable) -> FROZEN spiking reservoir (stepped incrementally,
@@ -61,6 +70,9 @@ class PolicyValueReservoir(nn.Module):
             reservoir_size=reservoir_size, n_actions=n_actions, d_model=d_model,
             n_layers=n_layers, n_heads=n_heads, context_len=context_len,
         )
+        # Reference copy taken at construction: this is literally "the weights as
+        # initialized" that spec §3's runtime tripwire compares against.
+        self.snapshot_frozen_weights()
 
     def init_state(self, batch_size: int, device: torch.device):
         mem = torch.zeros(batch_size, self.reservoir_size, device=device)
@@ -84,7 +96,48 @@ class PolicyValueReservoir(nn.Module):
     def trainable_parameter_count(self) -> int:
         return sum(p.numel() for p in self.trainable_parameters())
 
+    def snapshot_frozen_weights(self):
+        """(Re)take the reference copy `assert_reservoir_frozen` compares against.
+
+        Called once at construction, and again by `training.train.load_checkpoint`
+        after a resume: a resumed run's frozen weights are the ones that came off
+        disk, not the ones this process happened to construct before overwriting
+        them, so the reference point has to move with them or every subsequent
+        checkpoint would trip the wire spuriously.
+        """
+        self._frozen_snapshot = {
+            name: buf.detach().clone()
+            for name, buf in self.reservoir.named_buffers()
+            if name not in TRANSIENT_RESERVOIR_BUFFERS
+        }
+
     def assert_reservoir_frozen(self):
+        """Runtime tripwire for the frozen-reservoir invariant (spec §3).
+
+        Two independent halves, because either one alone can be satisfied while the
+        invariant is broken:
+          * zero `nn.Parameter`s under the reservoir -- no optimizer can even be
+            handed them;
+          * every frozen buffer still BIT-IDENTICAL to its initialization -- catches
+            an in-place write that never went through an optimizer at all
+            (`W_in.mul_(...)`, a stray `load_state_dict`, a fine-tuning experiment
+            someone forgot to revert).
+        Called in production by `training.train.save_checkpoint` before every write
+        to disk, so a corrupted reservoir can never be silently persisted and later
+        evaluated as if it were frozen.
+        """
         assert list(self.reservoir.parameters()) == [], (
             "reservoir must have zero nn.Parameters -- frozen-reservoir invariant violated"
         )
+        live = dict(self.reservoir.named_buffers())
+        for name, expected in self._frozen_snapshot.items():
+            actual = live.get(name)
+            assert actual is not None, (
+                f"frozen reservoir buffer {name} disappeared -- frozen-reservoir "
+                "invariant violated"
+            )
+            assert torch.equal(expected, actual), (
+                f"frozen reservoir buffer {name} is no longer bit-identical to its "
+                "initialization -- the reservoir was trained/mutated, so this run is "
+                "no longer the frozen-reservoir experiment spec §3 describes"
+            )

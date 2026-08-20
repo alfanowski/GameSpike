@@ -1,8 +1,11 @@
 __pycache__/
 *.pyc
 .venv/
-checkpoints/*.pt
-checkpoints/*.json
+# Runs write to checkpoints/{arm}_seed{seed}/, so these need the `**` (which also
+# matches zero directories, i.e. still covers anything left directly in checkpoints/).
+checkpoints/**/*.pt
+checkpoints/**/*.json
+checkpoints/**/*.jsonl
 *.gb
 *.gbc
 .pytest_cache/

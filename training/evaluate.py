@@ -77,7 +77,27 @@ the spread that actually matters:
     ACROSS training seeds -- not one checkpoint per arm evaluated over many
     episodes. This module is the per-checkpoint instrument for that experiment,
     not the experiment. Running it twice, once per arm, produces a comparison
-    that looks publishable and is not.
+    that looks publishable and is not. (`training/train.py --seed N` produces
+    those checkpoints: the seed drives both arms' trainable init AND the
+    reservoir arm's frozen weights, and lands in `{arm}_seed{N}/`.)
+  * THE RECURRENT-STATE REGIME HERE IS NOT THE ONE EITHER ARM WAS TRAINED IN.
+    Training resets the model's recurrent state at every rollout boundary --
+    every `rollout_len` steps, 128 by default -- as deliberate truncated BPTT
+    (see training/train.py's "TWO LIFETIMES"). This harness, by default,
+    initialises state ONCE per episode and never resets it again, so the policy
+    runs continuously for up to `max_steps_per_episode` (3000) steps: more than
+    20x the horizon it ever saw a gradient over. Both arms are therefore scored
+    in a regime neither was trained under, and there is no reason to assume that
+    penalises them equally -- memory horizon is precisely the axis on which a
+    frozen 8192-dim reservoir and a trained 192-dim GRU are most likely to
+    differ, so this mismatch sits directly on top of the quantity §5 is trying
+    to measure. It is not a bug (evaluating an episode as one continuous
+    playthrough is the honest thing to measure) but it IS an uncontrolled
+    variable, and a number quoted from here without it stated is a number
+    quoted without its main caveat. `state_reset_interval=rollout_len` runs the
+    matched-regime counterpart; reporting BOTH is what actually separates "this
+    arm is better" from "this arm degrades more slowly past its training
+    horizon".
 """
 import argparse
 import json
@@ -133,20 +153,36 @@ def _summarise(name: str, values) -> dict:
 
 def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: int,
                    max_steps_per_episode: int = 3000, novelty_coef: float = 0.05,
-                   seed: int = 0) -> dict:
+                   seed: int = 0, state_reset_interval: int = None) -> dict:
     """Play `n_episodes` with `arm`'s checkpoint and report per-episode statistics.
 
     Episode i is driven by a private generator seeded `seed + i`, so the run is
     reproducible from `seed` alone while the episodes still differ from one
     another. Returns the keys documented in `_summarise` for `extrinsic_return`,
-    `combined_return` and `episode_length`, plus `arm`, `n_episodes`, `seed` and
-    `episode_seeds`.
+    `combined_return` and `episode_length`, plus `arm`, `n_episodes`, `seed`,
+    `episode_seeds` and `state_reset_interval`.
+
+    `state_reset_interval` (default None = never reset within an episode) re-inits
+    the model's recurrent state every N env steps, mirroring what training does at
+    every rollout boundary. Set it to the run's `rollout_len` to score the arms in
+    the recurrent-state regime they were actually trained in; leave it None to
+    score one continuous playthrough. These measure different things and the
+    difference between them is itself informative -- see the module docstring's
+    "THE RECURRENT-STATE REGIME HERE IS NOT THE ONE EITHER ARM WAS TRAINED IN".
     """
     if n_episodes < 1:
         raise ValueError(f"n_episodes must be >= 1, got {n_episodes}")
+    if state_reset_interval is not None and state_reset_interval < 1:
+        raise ValueError(
+            f"state_reset_interval must be >= 1 or None, got {state_reset_interval}")
 
+    # seed=0 is build_model's own default and is irrelevant here: `load_checkpoint`
+    # overwrites every buffer, the reservoir's frozen W_in/TT cores included, with
+    # the ones the checkpoint was actually trained with (they are persistent
+    # buffers, so they are in the state dict). The construction seed only decides
+    # what gets thrown away.
     model, optimizer = build_model(arm)
-    load_checkpoint(model, optimizer, checkpoint_path)
+    load_checkpoint(model, optimizer, checkpoint_path, expected_arm=arm)
     model.eval()
     init_state_fn, step_fn = model._init_state_fn, model._step_fn
 
@@ -190,6 +226,12 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
                     extrinsic_total += float(reward)
                     combined_total += float(reward) + novelty_coef * novelty
                     steps += 1
+                    # Optional matched-regime mode: reset recurrent state on the
+                    # same cadence training does, so the policy is scored over the
+                    # horizon it actually received gradients over. Placed after the
+                    # step so an interval of N gives runs of exactly N steps.
+                    if state_reset_interval is not None and steps % state_reset_interval == 0:
+                        state = init_state_fn(1, DEVICE)
                     done = bool(terminated) or bool(truncated)
                 extrinsic_returns.append(extrinsic_total)
                 combined_returns.append(combined_total)
@@ -198,7 +240,8 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
         env.close()
 
     results = {"arm": arm, "n_episodes": n_episodes, "seed": seed,
-               "episode_seeds": episode_seeds}
+               "episode_seeds": episode_seeds,
+               "state_reset_interval": state_reset_interval}
     results.update(_summarise("extrinsic_return", extrinsic_returns))
     results.update(_summarise("combined_return", combined_returns))
     results.update(_summarise("episode_length", lengths))
@@ -228,6 +271,20 @@ def _format(results: dict) -> str:
                  "Comparing the two arms")
     lines.append("        needs several independently-trained checkpoints per arm, "
                  "compared across those seeds.")
+    reset = results.get("state_reset_interval")
+    if reset is None:
+        lines.append("  NOTE: recurrent state was NEVER reset within an episode, while "
+                     "training resets it every")
+        lines.append("        rollout_len (128) steps -- both arms are scored outside "
+                     "the memory regime they were")
+        lines.append("        trained in, and not necessarily by the same amount. "
+                     "Re-run with --state-reset-interval 128")
+        lines.append("        for the matched-regime counterpart.")
+    else:
+        lines.append(f"  NOTE: recurrent state was reset every {reset} steps within each "
+                     "episode (matched-regime mode);")
+        lines.append("        this is NOT the same measurement as a continuous "
+                     "playthrough (--state-reset-interval unset).")
     return "\n".join(lines)
 
 
@@ -243,12 +300,19 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0,
                         help="base seed; episode i is played under seed+i, so the "
                              "whole run reproduces from this one number")
+    parser.add_argument("--state-reset-interval", type=int, default=None,
+                        help="reset the model's recurrent state every N steps within an "
+                             "episode, mirroring training's rollout boundary. Unset "
+                             "(default) = one continuous playthrough, which is NOT the "
+                             "regime either arm was trained in -- see this module's "
+                             "docstring")
     parser.add_argument("--json", action="store_true",
                         help="print the raw results dict as JSON instead of a summary")
     args = parser.parse_args()
     results = run_evaluation(args.arm, args.checkpoint, args.rom, args.episodes,
                              max_steps_per_episode=args.max_steps,
-                             novelty_coef=args.novelty_coef, seed=args.seed)
+                             novelty_coef=args.novelty_coef, seed=args.seed,
+                             state_reset_interval=args.state_reset_interval)
     if args.json:
         # NaN is not valid JSON (JS's JSON.parse rejects it), and an unmeasurable
         # spread is exactly what null means, so the single-episode case

@@ -44,9 +44,31 @@ wrong, so it is stated explicitly:
     a fixed sequence boundary. These two lifetimes are independent: persisting
     the emulator does not require persisting (or snapshotting) recurrent state,
     and resetting model state at the same logical point on both sides is exactly
-    what keeps the replay bit-exact.
+    what keeps the replay bit-exact. NOTE: `training/evaluate.py` does NOT reset
+    state within an episode by default, which is a deliberate but real train/eval
+    regime mismatch -- see that module's "WHAT THIS HARNESS CANNOT TELL YOU".
+
+SEEDING, AND WHY IT COVERS BOTH ARMS SYMMETRICALLY. `seed` drives three things at
+once: `torch.manual_seed` (the trainable weights' random init on both arms, and
+the action sampling `collect_rollout_with_model` draws from the global RNG), and
+-- separately threaded through `build_model` -- `PolicyValueReservoir`'s own
+`seed=` argument, i.e. the frozen reservoir's W_in and TT cores. Hardcoding the
+latter (as an earlier version did) would have meant that across "different"
+training seeds only the GRU arm's init actually varied while the reservoir arm
+was always the exact same frozen instance -- an asymmetry in the very thing §5's
+control is supposed to isolate. `evaluate.py`'s own docstring spells out why a
+real §5 verdict needs several independently-trained checkpoints PER ARM; this is
+what makes producing them possible, labelled (arm+seed in the path AND in the
+checkpoint dict) and reproducible (same seed => same run).
+
+EVERY UPDATE IS LOGGED, not just the last one. `run_training` returns a summary of
+its FINAL update; a 100k-step run is ~780 updates, and a summary of the last one
+is no learning curve, no divergence detector and nothing to plot. Each update
+therefore appends one JSON object to `{run_dir}/train_log.jsonl`, flushed as it
+goes, so a running job is inspectable mid-flight rather than only post-mortem.
 """
 import argparse
+import json
 import os
 
 import numpy as np
@@ -71,13 +93,37 @@ MAX_GRAD_NORM = 0.5
 
 DEVICE = torch.device("cpu")
 
+# One line of JSON per PPO update, appended live. `.jsonl` (not `.json`) because a
+# run is appended to incrementally and may be killed at any point: a half-written
+# JSON array is unparseable, a half-written JSONL file is just shorter.
+TRAIN_LOG_NAME = "train_log.jsonl"
 
-def build_model(arm: str):
+
+def run_dir_for(checkpoint_dir: str, arm: str, seed: int) -> str:
+    """Per-run output directory: `{checkpoint_dir}/{arm}_seed{seed}`.
+
+    Both coordinates are in the path because both collide otherwise. Writing every
+    arm's checkpoints as `{checkpoint_dir}/step_{step}.pt` meant running `--arm
+    baseline` then `--arm reservoir` with default args silently overwrote the
+    first arm's checkpoints with the second's -- and the seed is in there for the
+    same reason one step further out, since §5's comparison needs SEVERAL
+    independently-trained checkpoints per arm sitting on disk at once.
+    """
+    return os.path.join(checkpoint_dir, f"{arm}_seed{seed}")
+
+
+def build_model(arm: str, seed: int = 0):
     """Construct one experimental arm's model plus its optimizer.
 
     Both arms are exposed through the same `(init_state_fn, step_fn)` pair so the
     rollout collector and the gradient replay below never branch on which arm
     they are driving.
+
+    `seed` is the reservoir arm's FROZEN-WEIGHT seed (W_in and the TT cores). It is
+    threaded in rather than hardcoded so a multi-seed comparison varies both arms,
+    not just the GRU's trainable init -- see the module docstring. It does NOT seed
+    the trainable init on either arm: that comes from the global RNG, which
+    `run_training` seeds before calling this.
     """
     if arm == "baseline":
         model = PolicyValueGRU(obs_dim=OBS_DIM, embed_dim=32, hidden_dim=192, n_actions=N_ACTIONS)
@@ -97,7 +143,7 @@ def build_model(arm: str):
     elif arm == "reservoir":
         model = PolicyValueReservoir(obs_dim=OBS_DIM, embed_dim=32, reservoir_size=8192,
                                      n_actions=N_ACTIONS, use_tensor_train=True, tt_rank=8,
-                                     tt_n_cores=4, context_len=64, seed=0)
+                                     tt_n_cores=4, context_len=64, seed=seed)
         init_state_fn = model.init_state
 
         def step_fn(m, obs, state):
@@ -114,20 +160,75 @@ def build_model(arm: str):
     )
     model._init_state_fn = init_state_fn
     model._step_fn = step_fn
+    # Carried on the model rather than passed to save_checkpoint separately: a
+    # checkpoint's arm/seed labels are then structurally incapable of disagreeing
+    # with the model that produced them.
+    model._arm = arm
+    model._seed = seed
     return model, optimizer
 
 
 def save_checkpoint(model, optimizer, step: int, path: str):
-    torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step}, path)
+    """Write one checkpoint, arm/seed-labelled, after the frozen tripwire passes.
+
+    The tripwire (spec §3: "a runtime tripwire asserting the reservoir's weights are
+    bit-identical to their initialization at every checkpoint") runs BEFORE the
+    write, on the reservoir arm only -- the baseline GRU has no frozen component to
+    check. Before the write specifically, so a reservoir that has somehow been
+    mutated can never reach disk and be evaluated later as if it were frozen.
+
+    The `arm`/`seed` labels are read off the model (`build_model` stamps them
+    there, so they cannot disagree with the weights) and written into the dict, so a
+    checkpoint file self-identifies. Without them, loading a reservoir checkpoint
+    into a baseline model surfaced as a state-dict shape mismatch several frames
+    away from the actual mistake.
+    """
+    if getattr(model, "_arm", None) == "reservoir":
+        model.assert_reservoir_frozen()
+    torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+                "step": step, "arm": getattr(model, "_arm", None),
+                "seed": getattr(model, "_seed", None)}, path)
 
 
-def load_checkpoint(model, optimizer, path: str) -> int:
+def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
+                    expected_seed: int = None) -> int:
+    """Restore a checkpoint into `model`/`optimizer`, returning its step.
+
+    `expected_arm`/`expected_seed` are checked BEFORE `load_state_dict`, so a
+    mismatch fails with a sentence naming the actual problem instead of a shape
+    error thrown from somewhere inside torch. Both default to None (unchecked) for
+    callers that genuinely do not care which run a file came from; every production
+    caller passes them.
+    """
     # weights_only=True: these checkpoints hold only tensors/state dicts, and
     # torch.load's default (weights_only=False) unpickles arbitrary Python
     # objects -- unnecessary code-execution risk even for our own checkpoints.
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
+    recorded_arm = ckpt.get("arm")
+    if expected_arm is not None and recorded_arm != expected_arm:
+        raise ValueError(
+            f"checkpoint arm mismatch: {path!r} was written by arm "
+            f"{recorded_arm!r}, but it is being loaded into arm {expected_arm!r}. "
+            "The two arms are architecturally different models; loading one into "
+            "the other is never valid. Check --arm, or the checkpoint path."
+        )
+    recorded_seed = ckpt.get("seed")
+    if expected_seed is not None and recorded_seed != expected_seed:
+        raise ValueError(
+            f"checkpoint seed mismatch: {path!r} was written by seed "
+            f"{recorded_seed!r}, but the run resuming it is labelled seed "
+            f"{expected_seed!r}. Continuing would produce checkpoints labelled "
+            f"{expected_seed} whose frozen reservoir is in fact seed "
+            f"{recorded_seed}'s -- pass --seed {recorded_seed} to continue that run."
+        )
     model.load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
+    # The loaded frozen weights are now this run's frozen weights, so the §3
+    # tripwire's reference point moves to them. Without this, a resumed reservoir
+    # run would compare against the weights this process constructed and then
+    # immediately overwrote, and trip on its very first checkpoint.
+    if hasattr(model, "snapshot_frozen_weights"):
+        model.snapshot_frozen_weights()
     return ckpt["step"]
 
 
@@ -157,8 +258,18 @@ def replay_rollout(model, obs_seq: torch.Tensor, dones: torch.Tensor):
     return torch.stack(logits_seq), torch.stack(values_seq)
 
 
+def _append_log(log_path: str, record: dict):
+    """Append one JSON object as a line. Reopened per call rather than held open:
+    ~780 opens over a 100k-step run is free next to the emulator, and every line is
+    on disk (not in a buffer) the instant it is written, which is the whole point of
+    a log you can watch a running job through."""
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+
+
 def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout_len: int,
                  checkpoint_every: int, checkpoint_dir: str, resume_from: str = None,
+                 seed: int = 0,
                  gamma: float = 0.99, lam: float = 0.95, clip_eps: float = 0.2,
                  value_coef: float = 0.5, entropy_coef: float = 0.01,
                  novelty_coef: float = 0.05):
@@ -169,16 +280,28 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     training/rollout.py's module docstring. It is not silently dropped from the
     signature so that adding parallel model-driven collection later does not
     change every caller.
+
+    Checkpoints and the per-update JSONL log go to `run_dir_for(checkpoint_dir,
+    arm, seed)`, not to `checkpoint_dir` itself, so concurrent/sequential runs of
+    different arms or seeds never overwrite each other. The returned stats dict
+    carries `run_dir`/`log_path` so a caller never has to re-derive that.
     """
-    model, optimizer = build_model(arm)
+    # Seeded before build_model, so it covers the trainable init on BOTH arms (and
+    # the action sampling that follows). The reservoir's own frozen-weight seed is
+    # a separate argument, threaded below -- see the module docstring.
+    torch.manual_seed(seed)
+    model, optimizer = build_model(arm, seed=seed)
     start_step = 0
     if resume_from and os.path.exists(resume_from):
-        start_step = load_checkpoint(model, optimizer, resume_from)
+        start_step = load_checkpoint(model, optimizer, resume_from,
+                                     expected_arm=arm, expected_seed=seed)
     # dim=OBS_DIM: novelty is scored on the game state the agent reached, not on
     # the policy's logits. See collect_rollout_with_model's own note -- scoring
     # logits changes the reward FUNCTION per arm, not merely the reported metric.
     novelty_gate = NoveltyGate(dim=OBS_DIM, capacity=512, k=8)
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    run_dir = run_dir_for(checkpoint_dir, arm, seed)
+    os.makedirs(run_dir, exist_ok=True)
+    log_path = os.path.join(run_dir, TRAIN_LOG_NAME)
 
     step = start_step
     last_checkpoint_step = start_step
@@ -253,9 +376,16 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                 # update was real rather than a no-op.
                 "grad_norm": float(grad_norm.item()),
             }
+            # The learning curve, written as it happens. `final_step`/`updates` are
+            # renamed to `step`/`update` here because in a per-update record they
+            # are this row's coordinates, not a run summary's end state.
+            _append_log(log_path, {
+                "arm": arm, "seed": seed, "step": step, "update": stats["updates"],
+                **{k: v for k, v in stats.items() if k not in ("final_step", "updates")},
+            })
             if step - last_checkpoint_step >= checkpoint_every:
                 save_checkpoint(model, optimizer, step,
-                                os.path.join(checkpoint_dir, f"step_{step}.pt"))
+                                os.path.join(run_dir, f"step_{step}.pt"))
                 last_checkpoint_step = step
     finally:
         env.close()
@@ -264,7 +394,8 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     # a run would never reach disk. Same naming scheme as the periodic saves, so
     # --resume-from takes it directly; re-writing an identical file is harmless
     # when the periodic save already landed on this exact step.
-    save_checkpoint(model, optimizer, step, os.path.join(checkpoint_dir, f"step_{step}.pt"))
+    save_checkpoint(model, optimizer, step, os.path.join(run_dir, f"step_{step}.pt"))
+    stats.update({"arm": arm, "seed": seed, "run_dir": run_dir, "log_path": log_path})
     return stats
 
 
@@ -278,7 +409,15 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint-every", type=int, default=10_000)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--resume-from", default=None)
+    parser.add_argument("--seed", type=int, default=0,
+                        help="training seed: trainable init + action sampling on both "
+                             "arms, AND the reservoir arm's frozen weights. Outputs go "
+                             "to {checkpoint-dir}/{arm}_seed{seed}/. Comparing the two "
+                             "arms needs several seeds per arm (see training/evaluate.py)")
     args = parser.parse_args()
-    stats = run_training(args.arm, args.rom, args.steps, args.n_envs, args.rollout_len,
-                         args.checkpoint_every, args.checkpoint_dir, args.resume_from)
+    stats = run_training(arm=args.arm, rom_path=args.rom, total_steps=args.steps,
+                         n_envs=args.n_envs, rollout_len=args.rollout_len,
+                         checkpoint_every=args.checkpoint_every,
+                         checkpoint_dir=args.checkpoint_dir,
+                         resume_from=args.resume_from, seed=args.seed)
     print(stats)
