@@ -66,6 +66,48 @@ its FINAL update; a 100k-step run is ~780 updates, and a summary of the last one
 is no learning curve, no divergence detector and nothing to plot. Each update
 therefore appends one JSON object to `{run_dir}/train_log.jsonl`, flushed as it
 goes, so a running job is inspectable mid-flight rather than only post-mortem.
+
+GRADIENT CLIPPING IS A SCIENTIFIC KNOB, NOT AN IMPLEMENTATION DETAIL
+(`--grad-clip-mode`, default `global` = the historical behaviour). A diagnostic on
+`checkpoints/reservoir_seed0/step_500480.pt` measured the following, and it is
+written down here because it is the reason the `per-group` mode exists at all:
+
+  * The reservoir arm backpropagates through `rollout_len`=128 sequential steps of
+    a FROZEN spiking reservoir. The gradient reaching the trainable `embedding`
+    grows exponentially in the replay-chain length L: global pre-clip norm 2.171 at
+    L=1, 52.19 at L=32, 1.111e4 at L=64, 3.988e6 at L=96, 1.258e9 at L=128 -- a
+    per-step multiplier of ~1.22. The readout's OWN gradient grows only ~sqrt(L)
+    (1.5 -> 8.9), and the baseline GRU arm is flat across the same sweep
+    (29.97 / 51.71 / 48.18). So the explosion is not "the loss", it is one path.
+  * Consequence: `embedding.weight` + `embedding.bias` -- 416 parameters, 0.3% of
+    the trainable budget -- carry 100.0000% of the global gradient norm. The 29
+    readout/head tensors (138,763 params, 99.7% of the budget) contribute ~5e-15%.
+  * ONE `clip_grad_norm_` over the whole parameter list therefore computes a clip
+    coefficient of 3.976e-10 from the exploding 0.3% and applies it to the 99.7%
+    that is not exploding, taking the readout's post-clip gradient norm to
+    3.52e-09.
+  * Adam is invariant to a CONSTANT rescaling of the gradient but NOT to a
+    time-varying one. The clip coefficient's max/median ratio over 1000 updates is
+    2.63e5, so `sqrt(v_hat)` (beta2=0.999, long memory) is set by the rare
+    non-exploding updates while `m_hat` (beta1=0.9, short memory) tracks the
+    typical one. The readout's median `|m_hat|/sqrt(v_hat)` collapses to 7.475e-04
+    versus 1.346e-01 on the baseline GRU: the readout is, in effect, frozen.
+  * Measured counterfactual on one step, same gradients and same restored Adam
+    state: per-group clipping raises the readout's median `||dp||/||p||` from
+    1.9034e-05 to 6.4186e-03 -- a factor of 337. Raising Adam's eps from 1e-8 to
+    1e-12 gives 1.11x, so the eps floor is NOT the mechanism; the shared clip
+    coefficient is.
+
+An arm comparison run under the global rule is therefore not cleanly testing the
+architectural question: it is partly measuring which arm's optimiser survived its
+own clipping. `per-group` clips each parameter group to MAX_GRAD_NORM separately,
+so an exploding group cannot suppress a non-exploding one. It is applied
+IDENTICALLY to both arms (the baseline GRU does not need it, but a control that
+only one arm receives is not a control).
+
+Default stays `global` and BIT-IDENTICAL: 20 completed runs / 200 checkpoints on
+disk have to stay exactly reproducible, and a results write-up depends on them.
+`--run-tag` exists for the same reason -- see `run_dir_for`.
 """
 import argparse
 import json
@@ -91,6 +133,16 @@ LEARNING_RATE = 3e-4
 # update. Clipping rescales the gradient, it never zeroes it.
 MAX_GRAD_NORM = 0.5
 
+# `global`   -- one clip_grad_norm_ over every trainable parameter at once. The
+#               historical behaviour, and the default, because the 20 completed
+#               runs on disk were produced under it and must stay reproducible.
+# `per-group` -- one clip_grad_norm_ per parameter GROUP (see
+#               `group_trainable_parameters`). Fixes the coupling documented at
+#               length in the module docstring: a 0.3%-of-the-budget embedding
+#               whose gradient explodes 1.22^128 cannot then scale the readout's
+#               update to 3.5e-09.
+GRAD_CLIP_MODES = ("global", "per-group")
+
 DEVICE = torch.device("cpu")
 
 # One line of JSON per PPO update, appended live. `.jsonl` (not `.json`) because a
@@ -99,8 +151,8 @@ DEVICE = torch.device("cpu")
 TRAIN_LOG_NAME = "train_log.jsonl"
 
 
-def run_dir_for(checkpoint_dir: str, arm: str, seed: int) -> str:
-    """Per-run output directory: `{checkpoint_dir}/{arm}_seed{seed}`.
+def run_dir_for(checkpoint_dir: str, arm: str, seed: int, run_tag: str = None) -> str:
+    """Per-run output directory: `{checkpoint_dir}/{arm}_seed{seed}[_{run_tag}]`.
 
     Both coordinates are in the path because both collide otherwise. Writing every
     arm's checkpoints as `{checkpoint_dir}/step_{step}.pt` meant running `--arm
@@ -108,8 +160,97 @@ def run_dir_for(checkpoint_dir: str, arm: str, seed: int) -> str:
     first arm's checkpoints with the second's -- and the seed is in there for the
     same reason one step further out, since §5's comparison needs SEVERAL
     independently-trained checkpoints per arm sitting on disk at once.
+
+    `run_tag` is the third coordinate, and it is a DATA-SAFETY requirement rather
+    than a convenience. arm+seed is no longer a unique run identity now that
+    `--grad-clip-mode` exists: re-running `--arm reservoir --seed 0` under
+    `per-group` would land on `reservoir_seed0/`, i.e. straight on top of the 20
+    completed runs (200 checkpoints) the results write-up is built from, and
+    torch.save would overwrite each `step_N.pt` in place. `--run-tag per-group`
+    sends the corrected re-run to `reservoir_seed0_per-group/` instead.
+
+    With no tag the path is BYTE-IDENTICAL to what it has always been, so every
+    existing run directory, resume path and analysis script still resolves. An
+    empty string is treated as no tag (an empty `--run-tag ""` must not produce a
+    trailing-underscore directory that silently forks the run layout).
     """
+    if run_tag:
+        return os.path.join(checkpoint_dir, f"{arm}_seed{seed}_{run_tag}")
     return os.path.join(checkpoint_dir, f"{arm}_seed{seed}")
+
+
+def group_trainable_parameters(model):
+    """Trainable parameters bucketed by the FIRST dot-separated component of their
+    `named_parameters()` name -- i.e. by top-level submodule.
+
+    Discovered, never hardcoded, so this keeps working if a module is added; the
+    names it currently yields are asserted in tests/test_grad_clip_modes.py so a
+    rename fails loudly there instead of silently collapsing everything into one
+    group (which would quietly restore the global-clip bug under a per-group flag).
+
+    Today:
+      baseline  -> {embedding, gru, actor_head, critic_head}   (10 tensors)
+      reservoir -> {embedding, readout}                        (31 tensors)
+
+    Note the asymmetry is REAL and is exactly the point: on the reservoir arm the
+    two groups are the exploding one (embedding, 416 params) and the frozen-out one
+    (readout, 138,763 params). The frozen reservoir itself holds zero nn.Parameters
+    and no gradients, so it cannot appear here at all.
+
+    Returns a dict preserving `named_parameters()` order, so the clipping order is
+    deterministic and a run stays reproducible.
+    """
+    groups = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        groups.setdefault(name.split(".")[0], []).append(param)
+    return groups
+
+
+def apply_grad_clipping(model, grad_clip_mode: str = "global"):
+    """Clip gradients in place. Returns (global_pre_clip_norm, group_pre_clip_norms).
+
+    `global_pre_clip_norm` is a tensor and always means the same thing in both
+    modes -- the norm over ALL trainable gradients, before any clipping -- so the
+    `grad_norm` field of an old log and a new one remain directly comparable.
+    `group_pre_clip_norms` is a `{group_name: float}` dict in `per-group` mode and
+    None in `global` mode.
+
+    Why None rather than "computed anyway for the logs": the `global` branch below
+    is the path 20 completed runs were produced under, and its bit-exactness is
+    worth more than a richer log line. Not one extra tensor op runs in it. The
+    branch itself is the ONLY thing between `backward()` and `optimizer.step()`
+    that differs between the modes.
+    """
+    if grad_clip_mode not in GRAD_CLIP_MODES:
+        raise ValueError(
+            f"unknown grad_clip_mode: {grad_clip_mode!r}; expected one of {GRAD_CLIP_MODES}"
+        )
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    if grad_clip_mode == "global":
+        # VERBATIM the historical call. Do not "clean this up".
+        return torch.nn.utils.clip_grad_norm_(trainable, MAX_GRAD_NORM), None
+
+    # per-group. Measure the global norm FIRST and without touching the gradients:
+    # `get_total_norm` is the exact function `clip_grad_norm_` computes its return
+    # value with, so `grad_norm` is the same number it would have logged, and the
+    # measurement provably cannot perturb the update.
+    grads = [p.grad for p in trainable if p.grad is not None]
+    total_norm = (torch.nn.utils.get_total_norm(grads) if grads
+                  else torch.tensor(0.0, device=DEVICE))
+    group_norms = {}
+    for group_name, params in group_trainable_parameters(model).items():
+        # Each group gets its OWN clip coefficient, so a group whose norm is 1.2e9
+        # scales only itself down and leaves a group whose norm is 8.9 alone.
+        # Applied identically on BOTH arms: the baseline GRU's gradients do not
+        # explode and will mostly pass through untouched, but a treatment given to
+        # one arm and not the other stops being a control -- the whole point of
+        # this experiment is that the two arms differ ONLY in architecture.
+        group_norms[group_name] = float(
+            torch.nn.utils.clip_grad_norm_(params, MAX_GRAD_NORM).item()
+        )
+    return total_norm, group_norms
 
 
 def build_model(arm: str, seed: int = 0):
@@ -182,16 +323,26 @@ def save_checkpoint(model, optimizer, step: int, path: str):
     checkpoint file self-identifies. Without them, loading a reservoir checkpoint
     into a baseline model surfaced as a state-dict shape mismatch several frames
     away from the actual mistake.
+
+    `grad_clip_mode`/`run_tag` are stamped the same way, for the same reason: the
+    clipping rule is now a knob, and two checkpoints with identical arm+seed but
+    different clipping rules are NOT the same experiment. A file that does not
+    carry the rule it was trained under cannot be placed in a results table. The
+    getattr defaults ("global"/None) are the historical behaviour, so a model built
+    outside `run_training` (every direct `build_model` caller, including tests)
+    self-labels exactly as the 200 checkpoints already on disk implicitly are.
     """
     if getattr(model, "_arm", None) == "reservoir":
         model.assert_reservoir_frozen()
     torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
                 "step": step, "arm": getattr(model, "_arm", None),
-                "seed": getattr(model, "_seed", None)}, path)
+                "seed": getattr(model, "_seed", None),
+                "grad_clip_mode": getattr(model, "_grad_clip_mode", "global"),
+                "run_tag": getattr(model, "_run_tag", None)}, path)
 
 
 def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
-                    expected_seed: int = None) -> int:
+                    expected_seed: int = None, expected_grad_clip_mode: str = None) -> int:
     """Restore a checkpoint into `model`/`optimizer`, returning its step.
 
     `expected_arm`/`expected_seed` are checked BEFORE `load_state_dict`, so a
@@ -199,6 +350,20 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
     error thrown from somewhere inside torch. Both default to None (unchecked) for
     callers that genuinely do not care which run a file came from; every production
     caller passes them.
+
+    BACKWARD COMPATIBILITY, load-bearing: the 200 checkpoints already on disk were
+    written before `grad_clip_mode`/`run_tag` existed and contain NEITHER key.
+    Every read of the new keys therefore goes through `.get(...)` with the
+    historical default -- indexing them directly would turn all 20 completed runs
+    into unloadable files (and take `training/evaluate.py`, the eval matrix and the
+    write-up with them). A pre-existing checkpoint reads back as
+    grad_clip_mode="global", run_tag=None, which is precisely what it is.
+
+    `expected_grad_clip_mode` WARNS rather than raises: resuming a run under a
+    different clipping rule produces a checkpoint whose optimiser state was
+    accumulated under the other rule, which is a scientific hazard but a legitimate
+    thing to do deliberately -- and raising here would break resuming any of the
+    existing runs.
     """
     # weights_only=True: these checkpoints hold only tensors/state dicts, and
     # torch.load's default (weights_only=False) unpickles arbitrary Python
@@ -220,6 +385,16 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
             f"{expected_seed!r}. Continuing would produce checkpoints labelled "
             f"{expected_seed} whose frozen reservoir is in fact seed "
             f"{recorded_seed}'s -- pass --seed {recorded_seed} to continue that run."
+        )
+    # .get, never ckpt["grad_clip_mode"]: pre-existing checkpoints have no such key.
+    recorded_clip_mode = ckpt.get("grad_clip_mode", "global")
+    if expected_grad_clip_mode is not None and recorded_clip_mode != expected_grad_clip_mode:
+        print(
+            f"WARNING: {path!r} was trained with grad_clip_mode={recorded_clip_mode!r} "
+            f"but is being resumed with grad_clip_mode={expected_grad_clip_mode!r}. "
+            "The restored Adam moments were accumulated under the other rule; the "
+            "resulting run is not a clean instance of either. Use --run-tag so this "
+            "does not land in a directory labelled as one of them."
         )
     model.load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
@@ -272,7 +447,8 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                  seed: int = 0,
                  gamma: float = 0.99, lam: float = 0.95, clip_eps: float = 0.2,
                  value_coef: float = 0.5, entropy_coef: float = 0.01,
-                 novelty_coef: float = 0.05):
+                 novelty_coef: float = 0.05,
+                 grad_clip_mode: str = "global", run_tag: str = None):
     """Collect -> GAE -> replay-with-gradients -> one PPO update, repeated.
 
     `n_envs` is accepted (it is part of the CLI/interface contract and of the
@@ -281,25 +457,52 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     signature so that adding parallel model-driven collection later does not
     change every caller.
 
+    `grad_clip_mode` selects the clipping rule, one of GRAD_CLIP_MODES:
+
+      "global"    (default) one clip over all trainable parameters. Bit-identical
+                  to the behaviour every existing checkpoint was produced under --
+                  this default is what keeps those runs reproducible, so it does
+                  not change, ever.
+      "per-group" one clip per top-level submodule. Applied identically to both
+                  arms. Exists because under "global" the reservoir arm's readout
+                  receives a gradient scaled by 3.976e-10 and effectively stops
+                  learning; see the module docstring for the measurements (337x
+                  larger readout updates, clip-coefficient max/median 2.63e5).
+
+    `run_tag` appends a third coordinate to the output directory so a re-run under
+    different settings cannot overwrite the completed matrix. Both are recorded in
+    every checkpoint and every log line, because a run whose clipping rule is not
+    written down next to its numbers cannot be interpreted later.
+
     Checkpoints and the per-update JSONL log go to `run_dir_for(checkpoint_dir,
-    arm, seed)`, not to `checkpoint_dir` itself, so concurrent/sequential runs of
-    different arms or seeds never overwrite each other. The returned stats dict
-    carries `run_dir`/`log_path` so a caller never has to re-derive that.
+    arm, seed, run_tag)`, not to `checkpoint_dir` itself, so concurrent/sequential
+    runs of different arms, seeds or tags never overwrite each other. The returned
+    stats dict carries `run_dir`/`log_path` so a caller never has to re-derive that.
     """
+    if grad_clip_mode not in GRAD_CLIP_MODES:
+        raise ValueError(
+            f"unknown grad_clip_mode: {grad_clip_mode!r}; expected one of {GRAD_CLIP_MODES}"
+        )
     # Seeded before build_model, so it covers the trainable init on BOTH arms (and
     # the action sampling that follows). The reservoir's own frozen-weight seed is
     # a separate argument, threaded below -- see the module docstring.
     torch.manual_seed(seed)
     model, optimizer = build_model(arm, seed=seed)
+    # Stamped onto the model for the same reason arm/seed are (build_model): a
+    # checkpoint's labels are then structurally incapable of disagreeing with the
+    # run that produced it.
+    model._grad_clip_mode = grad_clip_mode
+    model._run_tag = run_tag
     start_step = 0
     if resume_from and os.path.exists(resume_from):
         start_step = load_checkpoint(model, optimizer, resume_from,
-                                     expected_arm=arm, expected_seed=seed)
+                                     expected_arm=arm, expected_seed=seed,
+                                     expected_grad_clip_mode=grad_clip_mode)
     # dim=OBS_DIM: novelty is scored on the game state the agent reached, not on
     # the policy's logits. See collect_rollout_with_model's own note -- scoring
     # logits changes the reward FUNCTION per arm, not merely the reported metric.
     novelty_gate = NoveltyGate(dim=OBS_DIM, capacity=512, k=8)
-    run_dir = run_dir_for(checkpoint_dir, arm, seed)
+    run_dir = run_dir_for(checkpoint_dir, arm, seed, run_tag)
     os.makedirs(run_dir, exist_ok=True)
     log_path = os.path.join(run_dir, TRAIN_LOG_NAME)
 
@@ -354,8 +557,11 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
 
             optimizer.zero_grad(set_to_none=True)
             total_loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                [p for p in model.parameters() if p.requires_grad], MAX_GRAD_NORM)
+            # The one line the two modes differ in. In "global" this is the exact
+            # historical call; in "per-group" the gradients are clipped submodule by
+            # submodule so the exploding embedding cannot scale the readout's update
+            # into the noise floor (module docstring).
+            grad_norm, grad_norm_groups = apply_grad_clipping(model, grad_clip_mode)
             optimizer.step()
 
             step += rollout_len
@@ -372,15 +578,26 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                 "value_loss": float(v_loss.item()),
                 "entropy": float(entropy.item()),
                 "total_loss": float(total_loss.item()),
-                # Pre-clip gradient norm: the cheapest honest evidence that the
-                # update was real rather than a no-op.
+                # Pre-clip GLOBAL gradient norm: the cheapest honest evidence that
+                # the update was real rather than a no-op. Same meaning in both
+                # modes, so this field stays comparable against every log line the
+                # 20 completed runs wrote.
                 "grad_norm": float(grad_norm.item()),
+                # Per-group pre-clip norms, or None in "global" mode. This is the
+                # field that makes the pathology visible while a run is in flight:
+                # under "global", embedding ~1e9 next to readout ~9 is the whole
+                # bug in one line.
+                "grad_norm_groups": grad_norm_groups,
             }
             # The learning curve, written as it happens. `final_step`/`updates` are
             # renamed to `step`/`update` here because in a per-update record they
             # are this row's coordinates, not a run summary's end state.
+            # grad_clip_mode/run_tag are on EVERY line, not just the checkpoint: a
+            # log file gets copied and plotted on its own, and a learning curve
+            # whose clipping rule is unknown cannot be compared with another.
             _append_log(log_path, {
                 "arm": arm, "seed": seed, "step": step, "update": stats["updates"],
+                "grad_clip_mode": grad_clip_mode, "run_tag": run_tag,
                 **{k: v for k, v in stats.items() if k not in ("final_step", "updates")},
             })
             if step - last_checkpoint_step >= checkpoint_every:
@@ -395,7 +612,8 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     # --resume-from takes it directly; re-writing an identical file is harmless
     # when the periodic save already landed on this exact step.
     save_checkpoint(model, optimizer, step, os.path.join(run_dir, f"step_{step}.pt"))
-    stats.update({"arm": arm, "seed": seed, "run_dir": run_dir, "log_path": log_path})
+    stats.update({"arm": arm, "seed": seed, "run_dir": run_dir, "log_path": log_path,
+                  "grad_clip_mode": grad_clip_mode, "run_tag": run_tag})
     return stats
 
 
@@ -414,10 +632,30 @@ if __name__ == "__main__":
                              "arms, AND the reservoir arm's frozen weights. Outputs go "
                              "to {checkpoint-dir}/{arm}_seed{seed}/. Comparing the two "
                              "arms needs several seeds per arm (see training/evaluate.py)")
+    parser.add_argument("--grad-clip-mode", choices=list(GRAD_CLIP_MODES), default="global",
+                        help="gradient-clipping rule. 'global' (default) is one clip over "
+                             "all trainable parameters -- the rule every existing "
+                             "checkpoint was trained under, kept bit-identical so those "
+                             "runs stay reproducible. 'per-group' clips each top-level "
+                             "submodule separately, on BOTH arms: under 'global' the "
+                             "reservoir arm's 416-parameter embedding explodes to a "
+                             "gradient norm of ~1e9 and drags the clip coefficient to "
+                             "3.976e-10, which scales the readout's own (non-exploding) "
+                             "gradient down to 3.5e-09 and effectively freezes 99.7%% of "
+                             "the trainable budget. Measured effect of switching: 337x "
+                             "larger readout parameter updates")
+    parser.add_argument("--run-tag", default=None,
+                        help="optional third coordinate on the output directory: "
+                             "{checkpoint-dir}/{arm}_seed{seed}_{run-tag}/. USE IT for any "
+                             "run that is not a plain default-settings run -- arm+seed "
+                             "alone is no longer a unique identity now that "
+                             "--grad-clip-mode exists, so an untagged corrected re-run "
+                             "would overwrite the completed matrix in place")
     args = parser.parse_args()
     stats = run_training(arm=args.arm, rom_path=args.rom, total_steps=args.steps,
                          n_envs=args.n_envs, rollout_len=args.rollout_len,
                          checkpoint_every=args.checkpoint_every,
                          checkpoint_dir=args.checkpoint_dir,
-                         resume_from=args.resume_from, seed=args.seed)
+                         resume_from=args.resume_from, seed=args.seed,
+                         grad_clip_mode=args.grad_clip_mode, run_tag=args.run_tag)
     print(stats)
