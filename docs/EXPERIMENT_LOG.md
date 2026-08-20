@@ -1203,3 +1203,58 @@ for the repository owner. `gh` is authenticated as `alfanowski` with `repo` scop
   (§9) — use a worktree.
 - Running the test suite without `MARIO_LAND_ROM_PATH` set silently skips 94 tests and
   still prints a pass (§14.10).
+
+### 14.12 Progress log for the v2 run (appended live, so an interrupted run is legible)
+
+Times are CEST, 2026-08-20. This subsection is written **as the run proceeds**, not
+afterwards, specifically so that a session picking this up cold can tell the
+difference between "not started", "running" and "finished and unrecorded" — the
+exact ambiguity that cost this session an hour at §14.1.
+
+- **20:05** — handover checks (§14.1). No processes, no writes since 17:55, clean.
+- **20:12** — pre-registration of the go/no-go diagnostic and A7 committed (`0c2c1bd`)
+  before any measurement was taken.
+- **20:13** — the 120 v1 evaluation JSON files, previously untracked, committed
+  (`4a2e0ce`). Every number in `RESULTS.md` v1 had been reproducible only from this
+  one machine's disk. They are 480 KB and they are the raw evidence behind a
+  published conclusion, so they now live in the repository. Checkpoints stay
+  gitignored: 551 MB, and regenerable from a seed. Evaluation outputs are not.
+- **20:14** — A8 pre-registered and committed (`942a333`).
+- **20:16** — launch-readiness verified (§14.10): 224 tests pass, ROM present, disk
+  ample, eval driver confirmed to accept `--checkpoint-dir` / `--init-checkpoint-dir`
+  / `--results-dir` independently, which is what makes the §14.9 layout work with no
+  code change at all.
+- **20:17** — pre-flight: one `--steps 0` reservoir run under the full v2 flag set,
+  into a throwaway directory, verified to write a loadable checkpoint recording
+  `grad_clip_mode='per-group'`, `embed_init_mode='centered'`, `embed_scale=3.0`.
+  Throwaway deleted.
+- **20:19** — **Step 1 complete: all 20 untrained controls built** under the centred
+  init at `checkpoints_v2_init/{arm}_seed{0..9}/step_0.pt`, 21 MB total, every one
+  spot-checked to record the intended config. These are v2's `init` selection and
+  its §4.1 equivalence control.
+
+### 14.13 A caveat on H14a that is a property of the fixture, not of the fix
+
+Noted before the diagnostic's numbers arrive, so it cannot be read as a reaction
+to them.
+
+H14a measures the silent-unit fraction of a **v2-trained embedding** against
+`tests/data/real_obs_6000.npy`, which was collected under **v1** policies (3,000
+steps under a legacy-init trained policy, 3,000 under a uniform-random policy).
+Holding the observation window fixed and varying only the embedding is the right
+controlled comparison for the question H14a actually asks — *did the trained
+embedding drift away from the centring it was initialised with* — because it
+isolates the one thing under test.
+
+It is **not** a measurement of the silent fraction a v2 policy actually experiences.
+§12's limitations already established that the DC offset is policy-dependent: the
+same pooled bias measures **1.37% silent on pooled data, 4.61% on trained-policy-only
+data and 14.82% on random-policy-only data**. A v2 agent's own observation
+distribution is a third distribution, measured by none of those.
+
+**Consequence, stated in advance:** a passing H14a licenses "the centring is not
+undone by training", and does **not** license "the v2 reservoir is 2% silent in
+situ". The in-situ number requires collecting a fresh observation fixture under a
+v2-trained policy, which cannot be done until the v2 runs exist. If the v2 matrix
+completes, that measurement is cheap and should be taken; it is recorded here as a
+known gap rather than discovered later as an objection.
