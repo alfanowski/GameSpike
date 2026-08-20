@@ -37,12 +37,28 @@ How each one was confirmed:
                        wraps. This is the un-wrapped part of the camera position.
   * ADDR_WORLD_LEVEL   Poking 0x34 and forcing a status-bar redraw (by dying)
                        made the game draw "3-4", so it renders the world and
-                       level straight out of this byte's two nibbles. A natural
-                       level change was also observed, 0x11 -> 0x12, with the HUD
-                       following from "1-1" to "1-2". NOTE it is useless as a
-                       "are we in gameplay yet" gate -- it already reads 0x11 on
-                       the title screen at frame 120, before START is pressed.
-                       See envs/boot.py for the gate that actually works.
+                       level straight out of this byte's two nibbles. It also
+                       advances on a real, player-driven level completion: 1-1
+                       was played through to the exit (progress reached 2592,
+                       lives unchanged) and the byte went 0x11 -> 0x12 with the
+                       HUD following "1-1" -> "1-2", after which the game started
+                       1-2 with the progress counter re-based. That completion is
+                       committed as a test -- see
+                       tests/test_mario_land_env.py::test_completing_a_level_pays_the_bonus_and_terminates.
+                       CORRECTION (Task 5): an earlier note here cited a
+                       0x11 -> 0x12 transition seen during a long unattended run
+                       as a "natural level change". Re-running that scenario shows
+                       the run had already hit a game over (lives 2 -> 1 -> 0, then
+                       0 -> 2 as the ROM restarted) and the byte moved because the
+                       *attract-mode demo* went on to play 1-2 -- no level was
+                       completed. The byte still tracks the current level, so the
+                       conclusion drawn from it stood, but it was not evidence of a
+                       completion, and reading a change in it as "level finished" is
+                       only safe while the episode can never reach the game over.
+                       NOTE it is also useless as a "are we in gameplay yet" gate --
+                       it already reads 0x11 on the title screen at frame 120,
+                       before START is pressed. See envs/boot.py for the gate that
+                       actually works.
 
 Do not add or change an address here without repeating that empirical
 confirmation; a wrong address fails silently (it just reads a plausible-looking
@@ -169,8 +185,15 @@ def read_level_progress(pyboy) -> int:
     ADDR_SCROLL_X) while still falling when Mario genuinely walks back left
     (measured: -48 over 60 frames of holding left).
 
-    Accurate to within one 16px block; it resets to the level's start value when
-    Mario dies, so Task 5 must treat a life loss as an episode/segment boundary
-    rather than feeding that drop into the reward as a giant negative delta.
+    Accurate to within one 16px block; it collapses when Mario dies, because a
+    death reloads the level, so a life loss must be treated as an episode/segment
+    boundary rather than fed into a reward as a giant negative delta. That is what
+    envs/mario_land_env.py does.
+
+    It does NOT necessarily collapse to the *level's start*: 1-1 has an
+    intermediate checkpoint, and a death past it reloads there instead (measured:
+    a death at progress 929 respawned at 882, while a death earlier in the same
+    level respawned at 242). Never assume "respawn == level start" -- read the
+    post-reload value back and re-baseline on it, whatever it turns out to be.
     """
     return read_level_block(pyboy) * 16 + read_mario_x(pyboy)

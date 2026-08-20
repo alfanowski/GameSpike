@@ -14,13 +14,14 @@ here so they cannot come back:
 Both of those tests assert the *magnitude* they are guarding against as well as
 the value they expect, so neither can pass vacuously.
 """
+import inspect
 import os
 import random
 
 import numpy as np
 import pytest
 
-from envs import ram_map
+from envs import mario_land_env, ram_map
 from envs.mario_land_env import (
     DEATH_PENALTY,
     LEVEL_COMPLETE_BONUS,
@@ -363,35 +364,63 @@ def test_completing_a_level_pays_the_bonus_and_terminates():
 
 # ------------------------------------------------------------- mutation checks
 # Same discipline as tests/test_ram_map_invariants.py: an assertion that cannot
-# fail is not a test. Each case re-introduces one of the two reward bugs this file
-# exists to prevent -- by corrupting the RAM reader the env builds the reward on --
-# and demands that the named guard above then fails.
+# fail is not a test. Each case re-introduces one way of getting the reward wrong
+# -- by corrupting either a RAM reader the reward is built on or one of the env's
+# own safety constants -- and demands that the named guard above then fails.
+#
+# Two further mutations were verified by hand during implementation but are NOT
+# expressible as an isolated monkeypatch, because they are control-flow changes
+# rather than a value swap: deleting the `elif died: reward = DEATH_PENALTY` branch
+# (caught by test_a_life_loss_... and test_no_step_ever_pays_worse...), and skipping
+# the `_prev_progress` re-baseline on death steps (caught by test_a_life_loss_...).
+# The `read_lives` case below is the committed proxy for both: with deaths invisible
+# to the env, neither the death branch nor its re-baseline can ever run.
 
 _MUTATIONS = [
     # The dense term built on screen-relative X instead of level progress.
-    ("read_level_progress", lambda p: ram_map.read_mario_x(p),
+    (ram_map, "read_level_progress", lambda p: ram_map.read_mario_x(p),
      test_reward_keeps_paying_after_screen_x_saturates),
     # Deaths made invisible, so the env falls through to a raw delta across the reload.
-    ("read_lives", lambda p: 2,
+    (ram_map, "read_lives", lambda p: 2,
      test_a_life_loss_pays_the_death_penalty_and_rebaselines),
+    # The re-baseline done before the level reload has landed, so a reload that
+    # straddles a step boundary is still pending -- the tripwire then has to catch
+    # what the death path should have caught on its own.
+    (mario_land_env, "RESPAWN_SETTLE_FRAMES", 0,
+     test_no_step_ever_pays_worse_than_the_death_penalty),
+    # The backstop disabled, so an unattributed collapse reaches the dense term.
+    (mario_land_env, "MAX_BACKWARD_PIXELS_PER_FRAME", 1e9,
+     test_an_unattributed_progress_collapse_is_never_paid_as_a_delta),
 ]
 
 
 @pytest.mark.parametrize(
-    "attribute,wrong_value,guard",
+    "module,attribute,wrong_value,guard",
     _MUTATIONS,
-    ids=[f"{name}-caught-by-{guard.__name__}" for name, _, guard in _MUTATIONS],
+    ids=[f"{module.__name__.rsplit('.', 1)[-1]}.{name}-caught-by-{guard.__name__}"
+         for module, name, _, guard in _MUTATIONS],
 )
-def test_a_corrupted_reward_signal_is_caught_by_these_tests(attribute, wrong_value, guard, monkeypatch):
-    monkeypatch.setattr(ram_map, attribute, wrong_value)
+def test_a_corrupted_reward_signal_is_caught_by_these_tests(
+        module, attribute, wrong_value, guard, monkeypatch):
+    monkeypatch.setattr(module, attribute, wrong_value)
+    # Guards that take the monkeypatch fixture must be handed it: calling one bare
+    # would raise TypeError, which the except below would happily read as "the guard
+    # failed", and every case here would pass without testing anything.
+    kwargs = ({"monkeypatch": monkeypatch}
+              if "monkeypatch" in inspect.signature(guard).parameters else {})
     raised = None
     try:
-        guard()
+        guard(**kwargs)
     except BaseException as exc:  # noqa: BLE001 -- pytest.fail raises a BaseException subclass
         raised = exc
     assert raised is not None, (
-        f"corrupting ram_map.{attribute} did not make {guard.__name__} fail; "
+        f"corrupting {module.__name__}.{attribute} did not make {guard.__name__} fail; "
         "that guard is not actually pinning the reward's behaviour"
+    )
+    assert isinstance(raised, AssertionError), (
+        f"{guard.__name__} raised {type(raised).__name__} rather than failing an "
+        f"assertion when {module.__name__}.{attribute} was corrupted: {raised}. A guard "
+        "that merely crashes is not pinning the behaviour this mutation breaks"
     )
 
 
