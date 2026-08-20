@@ -66,20 +66,30 @@ not a redefinition of the goal down to one game. The full, real roadmap:
   1/2 and the continual-RL literature, e.g. Unicorn, DisCoRL, CORA). Genuinely open
   research, not a solved problem this project can assume away — not attempted until
   Phase 1 produces a real result.
-- **Phase 3 (future, blocked on a concrete technical issue, not a preference).** Game Boy
-  Advance as a platform. **Current status: blocked.** Investigated directly (2026-08-20,
-  §9.1 addendum below): `pygba`/mGBA (the GBA-equivalent of PyBoy) has no Apple Silicon
-  macOS wheel, and building it from source produces Python bindings that crash with a
-  hard native `SIGBUS` (root-caused to a documented cffi ABI-mode fragility on ARM64) the
-  moment a real ROM is loaded — a platform-level bug external to this project, confirmed
-  by direct investigation, not assumed from documentation. Two possible unblocking paths
-  were identified and neither has been attempted: patching mGBA's own build to use cffi's
-  API mode instead of ABI mode, or bridging over mGBA's built-in Lua scripting API via a
-  socket instead of direct Python bindings. Phase 3 starts only once one of those is
-  proven to work.
-- **Phase 4 (the actual named target).** Pokémon Fire Red / Pokémon-style RPGs on GBA,
-  once Phase 3 unblocks the platform. This is explicitly *not* abandoned — it is
-  sequenced behind a real technical blocker (Phase 3) and a real architectural
+- **Phase 3 (Game Boy Advance as a platform — UNBLOCKED 2026-08-20, not yet formalized).**
+  `pygba`/mGBA's direct Python bindings are dead on this platform (hard native `SIGBUS`,
+  root-caused to a documented cffi ABI-mode fragility on ARM64 — see §9.1). Instead, a
+  dedicated spike proved a **Lua-scripting + local-socket bridge to `mgba-headless`**
+  (mGBA's own official scripting engine, running inside mGBA's own process — no
+  Python/C FFI boundary at all) works end-to-end: 12/12 checks passed, deterministic
+  (byte-identical replays), fast (3,062 fps single instance; 15k fps aggregate across 8
+  parallel instances), and real player-controlled gameplay was verified (drove Super
+  Mario Advance through World 1-1 via a blind RAM scan plus live button input). Two real
+  mGBA bugs were found and worked around along the way: its savestate-to-file API is
+  completely broken (use the savestate-to-buffer API instead), and headless mode SIGSEGVs
+  on any pixel read (fixed with a small additive patch restoring the missing
+  `setVideoBuffer` call it never makes). The full recipe (Lua script, Python client, exact
+  build steps) exists as a proven scratchpad spike, **not yet turned into a real component
+  of this repository** — that formalization (a proper `gymnasium.Env`, the same
+  empirical-RAM-confirmation discipline already applied to Super Mario Land) is Phase 3's
+  actual remaining work, now unblocked rather than stuck on a platform bug.
+- **Phase 4 (the actual named target).** Pokémon Fire Red / Pokémon-style RPGs on GBA.
+  **Andrea's own Fire Red ROM is already on hand** (`~/Desktop/gba/Pokemon - Versione
+  Rosso Fuoco.gba`) — but it is the **Italian release** (cartridge code `BPRI`), not the
+  US release (`BPRE`) that published community RAM maps target, so its addresses will
+  need the same from-scratch empirical confirmation Super Mario Land's did, not a
+  drop-in reuse of an existing Fire Red RAM map. This phase is explicitly *not*
+  abandoned — sequenced behind Phase 3's formalization and a real architectural
   prerequisite genuinely called out from the start: an RPG's strategic/inventory/long-
   horizon demands need a planning layer above the frozen reservoir (a hierarchical
   extension), which has no design yet and is not something this document's architecture
