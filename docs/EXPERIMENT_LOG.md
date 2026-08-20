@@ -2409,3 +2409,91 @@ whose failure path must be tested *before* it is relied on, because its whole pu
 to be correct on the day something else has already gone wrong — and once the long
 unattended job is running, the guard is exactly the thing that can no longer be safely
 changed.
+
+## 20. Session handover, 2026-08-21 ~00:15 CEST — written while the matrix runs, not after
+
+Two orchestrator sessions have now died mid-experiment (§14.1's unattended prompt,
+§18.1's power loss), each costing the next session an hour of reconstruction. This
+subsection is written **while the third one is still alive** so that cost is not paid a
+third time. It is the "what is true right now and what remains" companion to §18/§19's
+"what happened".
+
+### 20.1 What is running
+
+- **`scripts/run_v2_pipeline.sh`, pid 3232**, orphaned (`PPID 1`, verified) and wrapped
+  in `caffeinate -is` so idle-sleep cannot suspend it. Launched 23:55:09.
+- It is in **stage 1**: the reservoir arm, 10 seeds, `--jobs 10`, executing from the
+  pinned worktree `.claude/worktrees/v2train` (commit `dc966a3`, §17.1) with
+  `--checkpoint-dir` pointing at the main repository's `checkpoints_v2/`.
+- It then chains, each arrow guarded: **baseline arm → evaluation matrix (120) →
+  aggregation → A7/A9**.
+- **Progress and health at 00:09:** 5,900 / 78,130 updates (7.55%), all ten seeds
+  present and rising (first-20-update mean extrinsic reward ~0.005 → last-20 ~0.036–0.069),
+  **zero NaN or Inf** across every numeric field of every log line, and per-group clipping
+  visibly working — embedding pre-clip norms ~1e4–1e6 against readout norms ~2–5.
+- **Projected:** reservoir arm ~03:00, baseline ~04:00, evaluation ~04:40.
+- Logs: `pipeline_v2.log` (stage transitions and guard verdicts),
+  `checkpoints_v2_reservoir_launch.log`, `checkpoints_v2_baseline_launch.log`,
+  `results_v2_eval.log`, and each run's own `checkpoints_v2/{arm}_seed{n}/launcher.log`.
+
+### 20.2 What a successor must do if this session dies
+
+Every stage is resumable and idempotent. In order:
+
+1. **Check `ps aux | grep training.train` first.** If runs are live, do not start more —
+   §9's two-live-runners hazard. If pid 3232 is gone but training processes are alive,
+   the chain is broken but the current stage is fine: let it finish, then run the
+   remaining stages by hand.
+2. **Never pass `--restart-incomplete`** against a `checkpoints_v2/` run directory
+   without reading §18.3 first. It deletes the directory and restarts that seed from
+   step 0.
+3. **Remaining commands**, all verified against the actual argparse surfaces:
+   - baseline arm: §14.11 Step 3, i.e. Step 2's command with `--arms baseline`.
+   - evaluation: §14.11 Step 4, unchanged and correct.
+   - statistics and A7/A9: **`scripts/run_v2_analysis.sh`** — NOT §14.11's Step 5, which
+     compares nothing (§19.1).
+   - write-up: §17.9 is the specification, written before the numbers existed.
+   - delivery: §13 / §17.9 — feature branch, PR against `main`, **left open**, no AI
+     co-author trailer.
+4. **A pending fix, deliberately not yet applied:** `scripts/run_v2_pipeline.sh`'s
+   `count_final`/`count_evals` must be replaced with exact path enumeration (§19.4).
+   It could not be applied while the script was executing (§19.3). **Apply it once the
+   pipeline is no longer running.**
+
+### 20.3 Analysis conventions, pinned so v2 is comparable to v1 line for line
+
+Several v1 figures are averages of averages, and **the order of the two averagings
+changes the answer**. These were recovered by reproducing v1's published numbers, not
+assumed, and v2 must use the identical convention or the side-by-side in §17.9's item 6
+is meaningless.
+
+| quantity | convention that reproduces v1 | v1 value |
+|---|---|---|
+| reward per step (`RESULTS.md` §5) | per seed `return / length`, **then** mean over seeds | 0.11455 vs 0.01921 |
+| baseline/reservoir training-reward ratio, all updates | ratio of the two **arm-level means** | **5.8220×** (published 5.82×) |
+| same, final decile | ratio of arm-level means over `L[90%:]` | **5.3252×** (published 5.33×) |
+| convergence, 5th → 10th decile (`RESULTS.md` §9) | **ratio of means** over `L[40%:50%]` → `L[90%:]` | **+0.58%** baseline, **+13.33%** reservoir |
+
+The last row is the trap. Taking the mean of *per-seed* ratios instead gives +0.79% and
+**+34.14%**, and on a narrower slice it gives **−109%** — because one reservoir seed's
+mid-run mean sits near zero and a per-seed ratio explodes on it. Ratio-of-means is the
+convention v1 used and the only stable one here.
+
+### 20.4 Verified this session, so it is not re-derived
+
+- All ten crashed `step_900864.pt` checkpoints load cleanly and self-identify with the
+  correct v2 configuration (§18.2).
+- The restarted runs are bit-identical to the crashed ones over their overlap: 3,535
+  values, 0 mismatches (§18.5).
+- The baseline arm runs correctly under the full v2 flag set, with the expected four
+  clipping groups (§18.6).
+- `training/evaluate.py` and `scripts/run_eval_matrix.py` are **byte-identical** between
+  v1's evaluation pin (`64839a9`) and the current tree, and re-running one v1 evaluation
+  from the current tree reproduced its committed result file exactly — all 30 per-episode
+  returns, lengths and episode seeds identical. **v1 and v2 are scored by the same
+  harness**, which is what makes the v1-vs-v2 comparison legitimate rather than an
+  artefact of harness drift.
+- The full downstream path was dry-run against the v2 layout before it was needed: the
+  eval driver resolves its 40 `init` jobs, `summarise_training_logs` parses every v2 log
+  line with `n_skipped_lines: 0`, and `reservoir_health.py` degrades to `NO DATA` rather
+  than raising on runs that do not exist yet.
