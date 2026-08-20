@@ -1,7 +1,8 @@
 # Spiking Reservoir RL — Design Document
 
-Status: brainstorm complete, ready for implementation planning
-Date: 2026-08-19
+Status: design stable; Roadmap Phase 1's implementation is complete and the experiment
+it describes has not yet been run (see README.md for the precise state of the code)
+Date: 2026-08-19 (amended 2026-08-20: §1.1, §5.1, §9.1, §10)
 Author: Andrea Alfano ("Alfanowski"), with research support from Claude (Sonnet 5)
 
 ## 1. Context and honest framing
@@ -159,7 +160,12 @@ reservoir's parameters remain `torch.Tensor` buffers with `requires_grad=False` 
 same invariant enforced in the LM project, verified the same way: zero
 `nn.Parameter`s on the reservoir, the optimizer constructed only over trainable
 components, and a runtime tripwire asserting the reservoir's weights are bit-identical to
-their initialization at every checkpoint.
+their initialization at every checkpoint. All three are implemented:
+`PolicyValueReservoir.assert_reservoir_frozen()` checks both halves (zero
+`nn.Parameter`s, and every frozen buffer bit-identical to the snapshot taken at
+construction), and `training.train.save_checkpoint` calls it on the reservoir arm
+*before* every write, so a mutated reservoir cannot reach disk and be evaluated later
+as if it had been frozen.
 
 ## 4. Components
 
@@ -192,15 +198,45 @@ their initialization at every checkpoint.
 
 ## 5. Mandatory scientific control
 
-Same non-negotiable discipline as both prior projects. Baseline: identical PPO
-architecture (actor/critic heads, same hidden sizes, same total trainable-parameter
-budget), identical RAM-state observation, but with the frozen reservoir replaced by a
-small trained recurrent network (GRU) of matched trainable-parameter count. This isolates
-whether the frozen reservoir contributes anything over a conventional, fully-trained RL
-feature extractor at the same parameter budget — without this control, any result
-(positive or negative) is not attributable to the reservoir specifically. If the
-reservoir does not beat this baseline, that is reported as a negative result, not
-hidden or reframed — consistent with both prior projects' practice.
+Same non-negotiable discipline as both prior projects. Baseline: the same PPO setup
+(actor and critic heads, same RL algorithm, identical RAM-state observation, identical
+curiosity signal) with the frozen reservoir replaced by a small trained recurrent
+network (GRU) of matched trainable-parameter count. This isolates whether the frozen
+reservoir contributes anything over a conventional, fully-trained RL feature extractor
+at the same parameter budget — without this control, any result (positive or negative)
+is not attributable to the reservoir specifically. If the reservoir does not beat this
+baseline, that is reported as a negative result, not hidden or reframed — consistent
+with both prior projects' practice.
+
+### 5.1 What "matched" binds on (amendment, 2026-08-20)
+
+This section originally read "same hidden sizes, same total trainable-parameter budget",
+as if both could hold at once. **They cannot, and the binding requirement is matched
+trainable-parameter COUNT** (within the 10% tolerance `tests/test_parameter_parity.py`
+enforces against the arms `training/train.py:build_model` actually constructs), **not
+matched hidden-layer sizes.** Recorded here rather than left as an unremarked gap
+between the spec and the code:
+
+- The two arms' readouts sit on top of architecturally different upstream
+  representations: a 192-dim trained GRU hidden state on the baseline, an 8192-dim
+  frozen reservoir state on the other. The reservoir readout's input projection alone
+  therefore costs ~8.2k parameters per unit of its `d_model`, and dominates its budget.
+- Fixing both arms' head width at the same number consequently blows the parameter
+  budget by ~4.7x (measured: `d_model=64` gives 629,163 trainable parameters against
+  the baseline's 132,715). Head hidden sizes end up at `hidden_dim=192` on the GRU arm
+  and `d_model=16` on the reservoir arm — 139,179 vs 132,715 parameters, ratio 1.049.
+- Parameter count is the correct thing to hold fixed, because it is the quantity the
+  control exists to neutralize: the LM project's own load-bearing finding is that a
+  frozen reservoir's storable capacity is bounded by the trained readout's parameter
+  count, so "same trained capacity, different feature extractor" is precisely the
+  comparison being made. Equal head widths at unequal parameter counts would compare
+  two differently-sized models and attribute the difference to the reservoir.
+
+The tradeoff is made explicit in code at `models/policy_value_reservoir.py`'s
+`__init__` comment (why `d_model=16` and not `ActorCriticReadout`'s own default of 64,
+including the measured ratios at 12/16/20) and enforced by
+`tests/test_parameter_parity.py`. Retune `d_model`/`n_layers`/`hidden_dim` to stay in
+band — never the tolerance.
 
 ## 6. Training procedure
 
@@ -280,28 +316,49 @@ an actual `.gb` ROM (Super Mario Land preferred per §1's rationale, but any rea
 Game Boy platformer is an acceptable substitute) rather than pursuing the GBA-emulation
 path further. The full investigation trail (build log locations, exact crash signature,
 dependency-fix sequence) is preserved in the implementation plan's SDD ledger
-(`.superpowers/sdd/2026-08-19-mario-ppo-reservoir/progress.md`) for anyone who later
-wants to revisit a GBA target with a different binding strategy (e.g. patching mGBA to
-build cffi in API mode instead of ABI mode, or bridging over mGBA's own Lua scripting API
-via a socket instead of direct Python bindings) — neither attempted here, both real,
-nontrivial engineering efforts outside this document's scope.
+(`.superpowers/sdd/2026-08-19-mario-ppo-reservoir/progress.md`).
+
+That ruling stands for this document — Phase 1 is a Game Boy experiment either way —
+but the two escape hatches it named have since diverged, and this paragraph is the
+one to read before repeating the claim that GBA is blocked:
+
+- **Bridging over mGBA's own Lua scripting API via a local socket: BUILT AND VERIFIED
+  WORKING (2026-08-20), so the `SIGBUS` above no longer blocks a GBA target at all.**
+  It sidesteps the crash by construction — the script runs inside mGBA's own process,
+  so there is no Python/C FFI boundary for libffi to misalign. 12/12 checks passed,
+  deterministic, ~3k fps single-instance / ~15k fps across 8 parallel instances, with
+  real player-controlled gameplay driven through Super Mario Advance's World 1-1.
+  See §1.1's Phase 3 entry for the full result, including the two mGBA bugs worked
+  around. It exists as a proven scratchpad spike and is **not yet a component of this
+  repository**; turning it into a real `gymnasium.Env` (with the same empirical
+  RAM-confirmation discipline applied to Super Mario Land here) is Phase 3's remaining
+  work — formalization work, not a platform bug.
+- **Patching mGBA to build cffi in API mode instead of ABI mode: still not attempted.**
+  It would be the fix for the direct-Python-bindings path specifically. There is now
+  little reason to spend that effort, since the socket bridge already delivers the
+  capability, faster and without patching a third-party build system.
 
 ## 10. Out of scope for THIS document (not abandoned — see the §1.1 roadmap)
 
 Everything below is deferred to a later roadmap phase (§1.1), not dropped. Restated here
 so nobody reading only this section mistakes "not built yet" for "not planned":
 
-- **Pokémon Fire Red / any RPG-genre target** — Roadmap Phase 4 (§1.1). Requires both a
-  hierarchical planning extension not designed here AND Roadmap Phase 3 (GBA platform
-  support) to unblock, since Fire Red is a GBA title and this document's PyBoy-based
-  pipeline cannot run GBA ROMs at all (§9.1).
+- **Pokémon Fire Red / any RPG-genre target** — Roadmap Phase 4 (§1.1). Fire Red is a
+  GBA title and this document's PyBoy-based pipeline cannot run GBA ROMs at all, so it
+  needs Roadmap Phase 3's GBA support formalized into a real component first (the
+  bridge itself works — §9.1 — but it is still a scratchpad spike). The binding
+  constraint on this phase is now the other prerequisite: a hierarchical planning layer
+  above the frozen reservoir, which has no design yet.
 - **Multi-game generalization / continual learning across titles** — Roadmap Phase 2
   (§1.1). A separate, genuinely open research problem (see the brainstorming transcript's
   review of DeepMind's SIMA 1/2 and the continual-RL literature — Unicorn, DisCoRL, CORA);
   not attempted until this document's single-game pipeline produces a real result.
-- **GBA as a platform generally** — Roadmap Phase 3 (§1.1). Currently blocked on a
-  confirmed native crash in mGBA's Python bindings on Apple Silicon (§9.1), not a
-  scheduling choice.
+- **GBA as a platform generally** — Roadmap Phase 3 (§1.1). **No longer blocked** as of
+  2026-08-20: the native `SIGBUS` in mGBA's Python bindings on Apple Silicon is real and
+  unfixed, but a Lua-scripting + local-socket bridge to `mgba-headless` sidesteps it
+  entirely and has been verified working end-to-end (§1.1, §9.1). Out of scope here for
+  the ordinary reason instead — it is a later roadmap phase, and the bridge is still a
+  scratchpad spike rather than a component of this repository.
 - DLIF, RSSR (deferred to build-order Phase 3 within *this* document, §7 — a different,
   narrower deferral than the roadmap phases above; see §7's naming note).
 - Any cloud GPU rental — zero-budget discipline carried over from the sibling `llm-lab`

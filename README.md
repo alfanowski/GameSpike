@@ -11,16 +11,32 @@ or biosignal interpretation.
 
 ---
 
-## Status: pre-implementation (2026-08-19)
+## Status: pipeline complete, experiment not yet run (2026-08-20)
 
-**This repository currently contains a design document and a detailed,
-task-by-task implementation plan — no model or training code has landed yet.**
-That is stated here directly rather than left implicit, in keeping with this
-project family's practice of reporting real status rather than aspirational
-status (see `spiking-reservoir-lm`'s own README/PAPER.md for that precedent).
-A results write-up (this project's equivalent of `PAPER.md`) will be added once
-Phase 1's core comparison — frozen reservoir vs. trained-GRU baseline — actually
-runs and produces real numbers, not before.
+Stated as precisely as possible, in keeping with this project family's practice
+of reporting real status rather than aspirational status (see
+`spiking-reservoir-lm`'s own README/PAPER.md for that precedent).
+
+**What exists.** All 12 tasks of the Phase 0 + Phase 1 implementation plan are
+complete: the PyBoy environment wrapper with an empirically-confirmed Super Mario
+Land RAM map, the discrete action space, both competing policy-value models at a
+verified-matched trainable-parameter budget, the trajectory-novelty curiosity
+gate, the PPO core, rollout collection, the training loop, and the evaluation
+harness. Both entry points run end-to-end against a real ROM: `training/train.py`
+collects rollouts, applies real gradient updates and writes checkpoints, and
+`training/evaluate.py` loads a checkpoint, plays it and reports per-episode
+statistics with spread. A 119-test suite covers it.
+
+**What does not exist.** No trained checkpoints, and no results. Nothing here has
+been trained for longer than a smoke run of a few dozen steps — the longest
+executions of this code to date are its own tests. **The Phase 1 comparison
+(frozen reservoir vs. matched-parameter trained GRU) has not been run**, so this
+repository currently contains no evidence either way about the question it exists
+to answer, and no number in it should be quoted as one. A results write-up (this
+project's equivalent of `PAPER.md`) will be added once that comparison actually
+runs and produces real numbers, not before — and per `training/evaluate.py`'s own
+documented requirement, "actually runs" means several independently-trained
+seeds per arm, not one checkpoint each.
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — full design rationale: why a reactive
   platformer (not an RPG) was chosen as the first target, the architecture,
@@ -50,7 +66,7 @@ runs and produces real numbers, not before.
   conventional trained recurrent policy at the same parameter budget — is
   scientifically informative rather than a silently discarded run.
 
-## Repository structure (as specified by the implementation plan)
+## Repository structure
 
 ```
 GameSpike/
@@ -59,9 +75,9 @@ GameSpike/
 │   └── superpowers/plans/        # implementation plan(s)
 ├── envs/                         # PyBoy wrapper, RAM-address map, action space
 ├── models/                       # vendored frozen reservoir + policy-value models
-├── training/                     # PPO, rollout collection, novelty gate, checkpointing
+├── training/                     # PPO, rollout collection, novelty gate, train/evaluate
 ├── tests/                        # pytest suite (TDD — written alongside each task)
-└── checkpoints/                  # trained checkpoints (gitignored, not distributed)
+└── checkpoints/                  # run outputs (gitignored, not distributed)
 ```
 
 ## Setup
@@ -78,6 +94,56 @@ pip install -r requirements.txt
 committed to this repository (`.gitignore` excludes `*.gb`/`*.gbc`). Set
 `MARIO_LAND_ROM_PATH` to its path before running the test suite or training
 scripts; tests that require it skip cleanly when it is unset.
+
+## Usage
+
+### Training
+
+```bash
+python -m training.train --arm baseline  --rom "/path/to/Super Mario Land (World).gb" \
+                         --steps 100000 --seed 0
+python -m training.train --arm reservoir --rom "/path/to/Super Mario Land (World).gb" \
+                         --steps 100000 --seed 0
+```
+
+Outputs go to `{--checkpoint-dir}/{arm}_seed{seed}/` (default `checkpoints/`), which
+holds `step_{N}.pt` checkpoints and `train_log.jsonl` — one JSON object per PPO
+update (step, mean reward, extrinsic-only mean reward, the three loss terms and the
+pre-clip gradient norm), appended live, so a running job can be watched and plotted
+as it goes. Both the arm and the seed are in the path *and* inside every checkpoint,
+so the two arms and multiple seeds never overwrite each other and a checkpoint file
+always self-identifies.
+
+`--seed` drives both arms' trainable init and action sampling **and** the reservoir
+arm's frozen weights, so the same seed reproduces a run exactly and different seeds
+vary both arms symmetrically. **This matters for the comparison**: a real §5 verdict
+needs several independently-trained seeds per arm (see below), not one run each.
+
+Other flags: `--rollout-len` (truncated-BPTT window, default 128), `--checkpoint-every`
+(default 10000 steps; a final checkpoint is always written regardless),
+`--checkpoint-dir`, `--resume-from PATH`, `--n-envs` (accepted, currently unused —
+collection is single-process).
+
+### Evaluation
+
+```bash
+python -m training.evaluate --arm reservoir \
+       --checkpoint checkpoints/reservoir_seed0/step_100000.pt \
+       --rom "/path/to/Super Mario Land (World).gb" --episodes 10 --seed 0
+```
+
+Reports `mean_extrinsic_return` (the scoreboard), `mean_combined_return` (the reward
+the loss optimised — diagnostic only, never the scoreboard) and mean episode length,
+each with a sample standard deviation, standard error and the raw per-episode values.
+`--json` emits the raw results dict instead.
+
+Read the caveats it prints, and `training/evaluate.py`'s "WHAT THIS HARNESS CANNOT
+TELL YOU" docstring section, before quoting any number from it. In short: the spread
+it reports is policy-sampling variance only, **one checkpoint per arm cannot support
+an arm comparison at all** (training-seed variance usually dominates and this cannot
+see it), and by default the policy is scored over a whole continuous episode while
+training reset its recurrent state every `--rollout-len` steps —
+`--state-reset-interval 128` runs the matched-regime counterpart.
 
 ## Running the test suite
 
