@@ -1889,3 +1889,65 @@ needed it**, which is the part that would otherwise be discovered at 01:00:
 
 §14.9's claim that the parent-directory layout needs no code change is therefore
 **verified end to end**, not merely argued from reading regexes.
+
+### 17.9 Specification for `RESULTS.md` v2 — written before the numbers, so the shape cannot be chosen to flatter them
+
+If this session stops before the write-up exists, **this subsection is the write-up's
+specification** and a future session should execute it rather than reinvent it. It is
+written now, deliberately, while the v2 numbers do not yet exist: a document whose
+structure is fixed before its results cannot have had its structure chosen to suit
+them.
+
+**Placement.** Appended BENEATH `RESULTS.md` v1, never edited into it. v1's numbers
+stay exactly as they are, including anything v2 contradicts. v1 §12 is the section
+promising v2; it is superseded by, not replaced with, what follows.
+
+**Mandatory sections, mirroring v1's shapes so the two read side by side:**
+
+1. **Headline.** The v2 verdict on `DESIGN.md` §5, stated in one sentence, in the
+   same form as v1 §1 — direction, effect size, exact permutation p, Cohen's d.
+   **Whichever way it goes.** If the reservoir still loses, that is the headline. If
+   it now wins, the headline says so *and* immediately states that two treatments
+   changed at once (§17.6) so the win is not attributable to either alone.
+2. **What changed from v1, exactly.** `--grad-clip-mode per-group`,
+   `--embed-init-mode centered`, `--embed-scale 3.0`, applied identically to both
+   arms; fresh untrained controls under the same init (§14.9); everything else held.
+   **`--embed-scale 3.0` must be stated explicitly** — v1 §12 omitted it and that
+   omission would have reproduced a disconfirmed configuration (§14.8).
+3. **Primary result**, the same six-row table as v1 §3 (final/best x
+   continuous/reset128, plus the two untrained rows), plus bootstrap CIs.
+4. **Controls**, mirroring v1 §4.1 (untrained arms indistinguishable?) and §4.2 (does
+   each arm beat its own initialisation?).
+5. **Per-step decomposition**, mirroring v1 §5. v1 found the episode-return
+   scoreboard *flatters* the reservoir by ~6x per step. **Recompute it; do not assume
+   it carries over.**
+6. **v1 vs v2, side by side** — did correcting the confound change the verdict, in
+   which direction, and by how much.
+7. **Reservoir health over a full run (A9)** and **the dead-gradient budget (A7)**,
+   with the verdicts computed by `analysis/reservoir_health.py` against their
+   pre-registered bands (§14.5, §15.6).
+8. **Efficiency**, mirroring v1 §8, measured on a quiet machine rather than reusing
+   §17.3's contended numbers.
+9. **Limitations.** Must carry forward every still-applicable item from v1 §9 and add
+   at minimum: the two-treatments-at-once confound (§17.6), H14a's falsification and
+   what it means for the embedding fix (§15.1), the group-count asymmetry v1 §9
+   already discloses (2 groups reservoir vs 4 baseline under per-group clipping), and
+   the fixture caveat (§14.13).
+10. **What v2 does and does not tell you**, mirroring v1 §10.
+
+**Binding constraints on the prose, all of them already earned:**
+
+- **May NOT claim the centred init keeps the reservoir healthy.** H14a is falsified
+  (§15.4). The only defensible claim is the one §15.4 states verbatim.
+- **May NOT present A8 as a Phase 1 result.** A8 is a construction diagnostic with no
+  training in it (§16.5). It belongs in its own clearly-scoped section, and the honest
+  Phase 1 headline comes first and is never buried under it.
+- **May NOT quote §17.3's throughput numbers as a §8 replacement** — they were taken
+  on a machine that was not quiet.
+- **Reports the negative honestly if it is negative.** The standing instruction on
+  this project is that the mandatory-control comparison's value rests entirely on it
+  being genuinely honest; a result improved by selection is worth less than nothing.
+
+**Delivery.** Feature branch + PR against `main`, **left OPEN, not self-merged** — it
+revises a published conclusion, which §13 reserves for the repository owner. No AI
+co-author trailer on any commit.
