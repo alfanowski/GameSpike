@@ -1850,3 +1850,42 @@ and **refuses to launch the baseline arm unless all ten are present**, exiting w
 message instead. Chaining a second one-hour batch onto a failed first batch only
 doubles the wreckage and destroys the evidence about why the first one failed. Both
 arms run under the identical flag set, from the identical pinned worktree.
+
+### 17.8 Live verification at 4% of the matrix — determinism, learning, and the whole downstream pipeline
+
+Checked at 20:37 CEST against data being written by the live runs, rather than
+waiting until 23:00 to discover a wiring fault.
+
+**1. The v2 runs reproduce the pilot bit-for-bit, on live data.** Seeds 0-2 of
+`checkpoints_v2/reservoir_seed{s}` compared against
+`checkpoints/reservoir_seed{s}_clipemb` over the ~397 updates both had reached, on
+seven float fields:
+
+| seed | updates compared | mismatches |
+|---|---|---|
+| 0 | 397 | **0** |
+| 1 | 395 | **0** |
+| 2 | 397 | **0** |
+
+This is the §14.14 result confirmed a third time, now on the actual matrix rather
+than on a smoke run: the pilot is the prefix of these runs.
+
+**2. All ten seeds are learning.** Mean extrinsic training reward, first 20 updates
+vs last 20, at ~400 updates: every seed rises, from a 0.005 band to a 0.021-0.061
+band. Seed 2 is the slowest (0.0066 -> 0.0209) and seed 9 the fastest
+(-0.0019 -> 0.0610). No seed is flat, diverged, or degenerate.
+
+**3. The entire downstream pipeline was dry-run against the v2 layout before the data
+needed it**, which is the part that would otherwise be discovered at 01:00:
+
+- `scripts/run_eval_matrix.py` resolves all **40/40** `init` jobs against
+  `--checkpoint-dir checkpoints_v2 --init-checkpoint-dir checkpoints_v2_init
+  --results-dir results_v2`, writing nothing.
+- `analysis.aggregate_results.summarise_training_logs('checkpoints_v2')` discovers
+  the reservoir runs and parses every line (`n_skipped_lines: 0`).
+- `build_eval_manifest('checkpoints_v2', selection='final')` correctly reports the
+  not-yet-existing baseline runs as `missing` with a reason string, rather than
+  raising.
+
+§14.9's claim that the parent-directory layout needs no code change is therefore
+**verified end to end**, not merely argued from reading regexes.
