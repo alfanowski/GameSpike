@@ -28,3 +28,7 @@ checkpoints_v2/**/*.pt
 checkpoints_v2/**/*.json
 checkpoints_v2/**/*.jsonl
 checkpoints_v2_init/
+checkpoints_v2/**/*.log
+# Launcher stdout for the v2 matrix. Per-job detail lives in each run's
+# launcher.log; these are the top-level driver logs, regenerable and noisy.
+checkpoints_v2_*_launch.log
