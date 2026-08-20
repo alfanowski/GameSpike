@@ -22,7 +22,9 @@ scientifically before generalizing" discipline already used in the sibling
 redefinition of the goal down to one game. Full version:
 [`docs/DESIGN.md` §1.1](docs/DESIGN.md#11-roadmap-this-document-is-phase-1-of-a-stated-larger-goal--not-the-destination).
 
-- **Phase 1 (this repository, currently running).** Super Mario Land, Game Boy: frozen
+- **Phase 1 (this repository; the as-specified comparison is complete, see
+  [`docs/RESULTS.md`](docs/RESULTS.md), and a corrected comparison is running).** Super
+  Mario Land, Game Boy: frozen
   reservoir vs. matched-parameter trained-GRU baseline, under a mandatory scientific
   control. Answers whether a frozen reservoir helps at all on real game control at a real
   matched parameter budget — without that answered honestly first, any later claim about
@@ -49,7 +51,7 @@ redefinition of the goal down to one game. Full version:
   RAM maps target, so its RAM addresses will need the same from-scratch empirical
   confirmation Super Mario Land's did.
 
-## Status: pipeline complete, Phase 1 experiment running (2026-08-20)
+## Status: the as-specified Phase 1 comparison is complete (2026-08-20)
 
 Stated as precisely as possible, in keeping with this project family's practice
 of reporting real status rather than aspirational status (see
@@ -66,17 +68,30 @@ collects rollouts, applies real gradient updates and writes checkpoints, and
 statistics with spread. A 169-test suite covers it (including the results-aggregation
 module in `analysis/`, added alongside this update).
 
-**What does not exist yet.** No trained checkpoints, and no results. **The Phase 1
-comparison (frozen reservoir vs. matched-parameter trained GRU) is now running**: 2 arms
-× 10 independently-seeded training runs each × 1,000,000 env steps per run, per
-`training/evaluate.py`'s own documented requirement that an honest comparison needs
-several independently-trained seeds per arm, not one checkpoint each — plus a set of
-untrained (`--steps 0`) reference checkpoints per arm/seed, kept as an experimental
-control. Until it completes, this repository contains no evidence either way about the
-question it exists to answer, and **no number in it should be quoted as one, in either
-direction**. A results write-up (this project's equivalent of `PAPER.md`) will be added
-once the comparison finishes and produces real numbers, not before.
+**The Phase 1 comparison has run as specified, and the result is negative for the
+reservoir arm.** 2 arms × 10 independently-seeded training runs × 1,000,064 env steps
+each, evaluated over 120 runs of the harness. Under the pre-registered protocol the
+frozen spiking reservoir **loses** to the matched-parameter trained GRU baseline on the
+declared scoreboard (`mean_extrinsic_return`), in every trained condition measured. Full
+write-up, including the controls that make that interpretable, the confound that limits
+it, and the limitations: [`docs/RESULTS.md`](docs/RESULTS.md).
 
+**A corrected comparison is in progress.** A root-cause diagnostic found after the runs
+completed that a single global gradient clip, whose coefficient is set by a 416-parameter
+embedding whose gradient explodes over the 128-step replay chain, trained the reservoir
+arm's readout far more slowly than the baseline's. The as-specified comparison therefore
+cannot cleanly separate "the frozen reservoir is a weaker feature extractor" from "its
+readout was barely trained". Corrected runs (per-group clipping and a centred embedding
+initialisation, applied identically to both arms) are executing; `docs/RESULTS.md` is
+marked **v1** and the corrected comparison will be appended to it as v2. Neither the
+negative headline nor the confound cancels the other, and neither should be quoted
+without the other.
+
+- [`docs/RESULTS.md`](docs/RESULTS.md) — **v1 results write-up**: the headline, the
+  setup, the two controls, the return-vs-per-step decomposition, the gradient-clipping
+  confound, the reservoir-construction findings, and the limitations.
+- [`docs/EXPERIMENT_LOG.md`](docs/EXPERIMENT_LOG.md) — the operational ledger:
+  pre-registered protocol and ablations, verified invariants, and the hazards already hit.
 - [`docs/DESIGN.md`](docs/DESIGN.md) — full design rationale: why a reactive
   platformer (not an RPG) was chosen as the first target, the architecture,
   the mandatory scientific control, and what is explicitly out of scope.
@@ -116,6 +131,8 @@ once the comparison finishes and produces real numbers, not before.
 GameSpike/
 ├── docs/
 │   ├── DESIGN.md                 # full design rationale
+│   ├── RESULTS.md                # Phase 1 results write-up (v1)
+│   ├── EXPERIMENT_LOG.md         # operational ledger + pre-registrations
 │   └── superpowers/plans/        # implementation plan(s)
 ├── envs/                         # PyBoy wrapper, RAM-address map, action space
 ├── models/                       # vendored frozen reservoir + policy-value models
@@ -208,8 +225,8 @@ python -m pytest tests/ -q
             Real-Time Feature Extractor for Reinforcement Learning, Evaluated
             Against a Matched-Parameter Trained Baseline},
   year   = {2026},
-  note   = {See docs/DESIGN.md for the full design rationale. A results
-            write-up will be added once Phase 1 produces real data.},
+  note   = {See docs/DESIGN.md for the full design rationale and
+            docs/RESULTS.md (v1) for the Phase 1 results.},
   howpublished = {\url{https://github.com/alfanowski/GameSpike}}
 }
 ```
