@@ -1515,3 +1515,173 @@ the whole matrix), which is why there is no excuse for extrapolating instead.
   Whether a healthier reservoir produces a better agent is what the v2 arm comparison
   measures, and A9 may not be substituted for it. (§12 records what happens when a
   falsification condition is written as a conditional on task performance.)
+
+## 16. A8 RESULTS — the structured-core route WORKS, and the honest caveat is bigger than the result
+
+Appended beneath §14.7's pre-registration, which is unrevised and was committed
+(`942a333`) before any of these measurements existed.
+
+**Both hypotheses are CONFIRMED.** §14.6 of this ledger said, in advance, that this
+session did **not** expect to solve criticism (c). That expectation was wrong, and
+being wrong in this direction is recorded with exactly the same prominence a
+disconfirmation would have been given.
+
+### 16.1 H8a — CONFIRMED. Entanglement entropy is tunable across essentially all of [0, 1]
+
+Normalised entanglement entropy S-bar, production geometry (`reservoir_size=8192`,
+`tt_rank=8`, `tt_n_cores=4`), three reservoir seeds per lambda:
+
+| lambda | seed 0 | seed 1 | seed 2 | **mean** |
+|---|---|---|---|---|
+| 1.0 (= the existing construction) | 0.991824 | 0.994166 | 0.991603 | **0.992531** |
+| 0.9 | 0.818772 | 0.792239 | 0.813486 | **0.808166** |
+| **0.7** | 0.373856 | 0.410766 | 0.360506 | **0.381709** |
+| **0.5** | 0.139848 | 0.193598 | 0.115370 | **0.149606** |
+| 0.3 | 0.027806 | 0.043949 | 0.020546 | **0.030767** |
+| 0.1 | 0.000612 | 0.001025 | 0.000435 | **0.000691** |
+
+Absolute range **0.993731** against a pre-registered threshold of 0.3, and the
+productive band **[0.1, 0.5] is entered at lambda = 0.7 and 0.5, on the mean and on
+every individual seed**. Neither falsification clause is met.
+
+**Anchor check:** lambda = 1.0 returns S-bar 0.991824, reproducing §11.0's
+independently measured 0.9918. The sweep sits on exactly the construction A5/A6
+measured, so this is a continuous extension of that work and not a different object.
+
+**The entropy moved because the spectrum decayed**, which is the mechanism A6
+identified as the only one available. Middle-bond normalised Schmidt spectrum, seed
+0 (uniform reference 0.125):
+
+- **lambda = 1.0:** 1.68814e-01 … 9.40263e-02 — near-flat, reproducing A6's
+  0.16881 … 0.09403 exactly. max/min = **1.80**.
+- **lambda = 0.7:** 7.30107e-01, 2.03600e-01, 5.17303e-02, 1.19159e-02, … —
+  max/min = **2.3e4**.
+
+### 16.2 The operator-norm confound was checked and does NOT explain the result
+
+The obvious objection: the profile multiplies by factors <= 1, so it shrinks the
+operator, and a near-trivial reservoir would have a low S-bar for an uninteresting
+reason. **The shrinkage is real and it is reported: sigma_max falls 5.2x overall
+(2.908942 -> 0.533385).** But it **saturates at lambda ~= 0.7 and is flat to within
+4% below that**, while S-bar keeps falling by nearly three orders of magnitude
+(0.374 -> 0.0006) over exactly that flat stretch. The two quantities are dissociated
+precisely where the hypothesis is decided.
+
+**The decisive control:** rescale the lambda = 0.7 cores by a single global factor —
+which is exactly what the pre-existing `tt_core_std` knob does, and to which S-bar is
+*provably* invariant (A5) — until `sigma_max` matches lambda = 1.0's to all printed
+digits. **S-bar is unchanged bit-for-bit** (0.373856 / 0.410766 / 0.360506, seeds
+0/1/2, before and after). A low S-bar at lambda = 0.7 is a genuine structural change,
+not a shrunken reservoir.
+
+### 16.3 H8b — CONFIRMED, and the cost is stated rather than buried
+
+Firing health at lambda = 0.7 (the first in-band lambda on the pre-registered grid),
+measured with the same `_silent_fraction` machinery on the same committed fixture,
+under `centered` + `embed_scale=3.0`:
+
+| lambda | mean silent | mean spike rate | saturated |
+|---|---|---|---|
+| 1.0 | 1.8107% | 0.018013 | 0% |
+| **0.7** | **5.2734%** | **0.012857** | **0%** |
+| 0.5 | 5.2612% | 0.012846 | 0% |
+
+Silent 5.27% against a 10% threshold, spike rate 1.29% inside the 1-3% band, zero
+saturated units. Neither falsification clause is met.
+
+**Reported without softening: the profile still costs firing health.** Silent
+fraction roughly **triples** (1.81% -> 5.27%) and the spike rate drops **29%**. Both
+stay inside the pre-registered thresholds, so H8b holds *as written*, but this is a
+real degradation and not a free lunch. The norm-matched control recovers about a
+third of it (silent 4.15%), so roughly one third of the cost is operator shrinkage
+and the remainder is the structural change itself.
+
+### 16.4 Implementation, and the bit-identity guarantee that makes the sweep a controlled comparison
+
+Shipped as `SpikingReservoir(tt_bond_decay=1.0)` — **default is the no-op**, the same
+discipline `--grad-clip-mode` and `--embed-init-mode` were shipped under, because
+published results depend on the existing construction being reproducible bit-for-bit.
+
+- **Bond-index convention derived from the code, not assumed.** A core is
+  `(r_{k-1}, m_k, n_k, r_k)`; axis 0 is the left bond, axes 1/2 the physical modes,
+  axis 3 the right bond — read off `_tt_matvec`'s contraction `'bpans,amnc->bpmcs'`
+  and `entanglement_entropy`'s `(rp, m*n, rk)` flattening. A test asserts the ratio
+  `core_lambda / core_1` is constant over the physical axes and exactly
+  `lambda^(a_left + a_right)` over the bond axes. **Putting the profile on a mode
+  index would also have moved the entropy**, which is why it is checked against the
+  axis structure rather than inferred from a favourable result.
+- **Shared bonds are handled symmetrically** — every bond axis of every core gets the
+  identical weight vector, so no core "owns" a bond. Consequence stated rather than
+  buried: each internal bond index is suppressed twice, so effective suppression is
+  `lambda^(2r)`. A one-sided convention is the same family reparametrised
+  `lambda -> sqrt(lambda)`, not a different construction. Boundary bonds have
+  `r_0 = r_d = 1`, so `lambda^0 = 1` — a no-op by construction, never a hidden edge
+  case.
+- **lambda = 1.0 is bit-identical, proven not asserted.** The multiplication is
+  applied unconditionally (no short-circuit that would make the test vacuous), and
+  full state dicts compare equal under `torch.equal` on every tensor. At *every*
+  lambda the profile is applied after the `randn` draw and never consumes the
+  generator, so `W_in` is bit-identical across lambdas and each core satisfies
+  `torch.equal(C_lambda, C_1 * left * right)` **exactly**. The sweep is therefore one
+  reservoir family under a deterministic per-entry factor, not six unrelated
+  reservoirs.
+- **The entropy estimator is the shipped A5/A6 one**, reused rather than
+  reimplemented, and validated on cases where the answer is known independently:
+  product state -> **0.0 exact**; maximally entangled dim-4 bond -> **1.0 to 1e-6**;
+  a designed spectrum sigma = (1, 0.5, 0.25, 0.125) -> **0.522449 to 1e-6 against the
+  analytic value**. The third case exists because the first two never exercise the
+  `-sum p log p` sum on a non-degenerate spectrum.
+
+### 16.5 What A8 does NOT show, stated at least as loudly as what it does
+
+**A8 includes no training. It cannot say whether a lower S-bar produces a better
+agent, and nothing in this section may be read as saying so.** This is the exact
+mistake §12 already recorded once, when A4-A6's falsification condition was written
+as a conditional on task performance and became untestable; §14.7 was deliberately
+written to state its conditions purely over construction quantities, and that
+scoping is what makes these verdicts clean.
+
+Three further limits:
+
+- **`entanglement_entropy`'s productive band [0.1, 0.5] comes from Sato et al., who
+  validated it on rate-based regression, not on a spiking reservoir.** The band is
+  imported, not established here.
+- **The knob is not wired into training.** `tt_bond_decay` exists only on
+  `SpikingReservoir`; `PolicyValueReservoir`, `build_model`, the CLI and the
+  checkpoint dict do not carry it. Any training ablation needs that plumbing first,
+  including recording it in checkpoints and log lines the way `embed_init_mode` and
+  `embed_scale` are.
+- **lambda pins S-bar to a band, not to a value.** At lambda = 0.5 the three seeds
+  span 0.115-0.194, roughly +/-30% around the mean, and the relative spread grows as
+  lambda falls. Any future design targeting a specific S-bar must measure it per seed
+  rather than trust the lambda -> S-bar map.
+
+### 16.6 Status of the three architectural criticisms, restated honestly
+
+| criticism | status |
+|---|---|
+| (a) structurally silent units | **Root cause found and fixed at initialisation** (§12), but the fix **decays during training** (§15.1) — silent fraction 1.8% at init, 22.4% by 30% of a run. **Partially solved.** |
+| (b) trainable budget receiving no gradient | **Mechanism confirmed, magnitude wrong** (A4a). A7 (§14.5) is pre-registered and its answer arrives with the v2 matrix. **Open, under test.** |
+| (c) entanglement entropy / deep chaos | **Solved at construction** (A8): tunable across [0,1], productive band reachable at lambda 0.5-0.7, firing health preserved, confound controlled. **Whether it helps the agent is untested and remains OPEN.** |
+
+§12's stated conclusion — *"no construction that keeps i.i.d. Gaussian cores can
+reach the productive band"* — **needs no retraction**. It was scoped to i.i.d.
+Gaussian cores, and that scope is precisely what A8 broke. The sibling project's open
+question is now **testable for the first time**; it is still **open**.
+
+### 16.7 Under-specifications in §14.7, reported rather than reinterpreted
+
+Recorded because a pre-registration's weaknesses should be logged by the people who
+hit them, not discovered by a reader:
+
+1. *"spans an absolute range of at least 0.3"* does not say whether over individual
+   seeds or per-lambda means. Both satisfy it here (0.9937 / 0.9918), so it is moot —
+   but it should be tightened next time.
+2. *"whichever lambda first lands S-bar inside [0.1, 0.5]"* does not say whether
+   "first" means grid order or largest lambda. Both give 0.7 here.
+3. The pre-registration does not say whether the profile should be normalised to
+   preserve operator scale. It was implemented literally (unnormalised), and the
+   scale shown to be separately recoverable through `tt_core_std`.
+
+**None of these was used to bend a verdict**, and both verdicts hold under either
+reading of every ambiguity.
