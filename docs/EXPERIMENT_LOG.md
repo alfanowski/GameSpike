@@ -1951,3 +1951,43 @@ promising v2; it is superseded by, not replaced with, what follows.
 **Delivery.** Feature branch + PR against `main`, **left OPEN, not self-merged** — it
 revises a published conclusion, which §13 reserves for the repository owner. No AI
 co-author trailer on any commit.
+
+### 17.10 The pipeline is chained end-to-end and guarded at every step
+
+Written because the previous session's failure mode was *stopping with work half-done
+and nobody watching*. The v2 pipeline is therefore built so that the data and the
+statistics complete **without requiring this session to still be alive**:
+
+```
+reservoir arm (10 runs)
+    -> [guard: 10 final checkpoints?] -> baseline arm (10 runs)
+        -> [guard: 10 + 10 final checkpoints?] -> evaluation matrix (120 evals)
+            -> aggregation -> results_v2_report.txt / results_v2_report.json
+```
+
+**Every arrow is guarded, and every guard fails loudly rather than continuing.** The
+evaluation guard matters most: evaluating a partial matrix would silently produce a
+comparison with fewer seeds than it claims, which is a **wrong result rather than a
+failed run** — exactly the failure mode `training/evaluate.py`'s docstring warns
+about and the one this project's whole unit-of-analysis discipline (§2) exists to
+prevent. The guards refuse and print, they never degrade gracefully.
+
+**What is NOT automated, deliberately:** the `RESULTS.md` v2 write-up and the pull
+request. Those require judgement about what the numbers mean, and §17.9 specifies
+them in enough detail for a session that was not here to execute them. The A7/A9
+measurements (`analysis/reservoir_health.py`) are likewise a manual step, because
+their verdicts feed the write-up.
+
+**Timeline projected from the measured rate at 20:39** (447 updates/min aggregate):
+
+| stage | projected finish |
+|---|---|
+| reservoir arm | ~23:23 |
+| baseline arm | ~00:23 |
+| evaluation matrix | ~00:58 |
+
+**If you are a later session reading this and those artefacts are missing:** check
+`ps aux` first, then `checkpoints_v2_reservoir_launch.log`,
+`checkpoints_v2_baseline_launch.log` and `results_v2_eval.log`, then each run's own
+`checkpoints_v2/{arm}_seed{n}/launcher.log`. §14.11's checklist re-runs any stage by
+hand; every stage is resumable and idempotent.
