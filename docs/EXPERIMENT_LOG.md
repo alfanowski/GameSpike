@@ -749,3 +749,25 @@ the gain are only a fix together**, which is why both knobs shipped.
   pre-registered falsification condition that would have connected the two was
   untestable as formulated (above). Nothing here licenses a claim about the Phase 1
   arm comparison.
+
+---
+
+## 13. Development workflow change
+
+Everything up to and including §12 was pushed directly to `main` via verified
+clean fast-forwards. That was the workflow in force at the time; it is not
+being revised retroactively and the history stands as intentional.
+
+**From this point forward, changes go through a feature branch + pull request
+against `main`** instead of direct pushes. Convention:
+
+- **Substantive or headline-bearing changes** — anything that revises a
+  published conclusion (e.g. a new revision of `docs/RESULTS.md`) — are left
+  as an **open** PR for the repository owner to review and are not
+  self-merged.
+- **Mechanical infrastructure changes** (run drivers, test fixtures, ledger
+  appends, tooling) still go through a branch and a PR for the audit trail,
+  but may be merged once the test suite passes.
+
+`gh` is authenticated as `alfanowski` with `repo` scope, so a future session
+can use `gh pr create` directly rather than setting up auth from scratch.
