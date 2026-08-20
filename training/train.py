@@ -108,6 +108,29 @@ only one arm receives is not a control).
 Default stays `global` and BIT-IDENTICAL: 20 completed runs / 200 checkpoints on
 disk have to stay exactly reproducible, and a results write-up depends on them.
 `--run-tag` exists for the same reason -- see `run_dir_for`.
+
+THE EMBEDDING INITIALISATION IS A SCIENTIFIC KNOB TOO (`--embed-init-mode`,
+default `legacy` = the historical behaviour; `--embed-scale`, default 1.0).
+
+A diagnostic over 6,000 real observation steps (3,000 trained-policy, 3,000
+random-policy) found the observation is DC-dominated: 77.70% of its energy is its
+own mean, so 76.11% of the reservoir's input-current variance is DC. The LIF
+neuron integrates DC with gain 1/(1-beta)=10.0 against AC's 1/sqrt(1-beta^2)=
+2.2942 -- a 4.3589x amplification of exactly the component that carries no
+information. The result is a frozen per-unit membrane offset (std 0.943583 across
+units, range [-3.5080, +3.4847], threshold 1.0) that leaves 14.93% of units
+permanently below -threshold (silent forever) and 14.50% permanently saturated.
+
+`--embed-scale` alone cannot fix that -- it multiplies DC and AC together, and a
+scale sweep floors at ~20% silent even at 32x. `--embed-init-mode centered` sets
+the embedding's bias to -(W @ obs_mean), which is exactly "embed the centred
+observation" because the embedding is linear, costs zero new parameters, and
+leaves the bias trainable. Measured over 8 seeds: silent fraction 44.7403% ->
+1.7532%, mean spike rate 0.024351 -> 0.020912, zero saturated units.
+
+Applied IDENTICALLY to both arms, for the same reason per-group clipping is; see
+models/embedding_init.py. Both settings are recorded in every checkpoint and every
+log line, and both default to the historical behaviour.
 """
 import argparse
 import json
@@ -116,7 +139,8 @@ import os
 import numpy as np
 import torch
 
-from envs.mario_land_env import MarioLandEnv, OBS_DIM
+from envs.mario_land_env import MarioLandEnv, OBS_DIM, OBS_MEAN
+from models.embedding_init import EMBED_INIT_MODES as _EMBED_INIT_MODES
 from models.policy_value_gru import PolicyValueGRU
 from models.policy_value_reservoir import PolicyValueReservoir
 from training.novelty_gate import NoveltyGate
@@ -143,6 +167,16 @@ MAX_GRAD_NORM = 0.5
 #               update to 3.5e-09.
 GRAD_CLIP_MODES = ("global", "per-group")
 
+# `legacy`   -- the embedding init every existing checkpoint was produced under
+#               (zeroed bias on the reservoir arm, nn.Linear's default on the
+#               baseline). THE DEFAULT, and it stays the default.
+# `centered` -- embedding.bias := -(W @ OBS_MEAN), i.e. the embedding of the
+#               DC-removed observation. Both arms, always. See the module
+#               docstring and models/embedding_init.py.
+# Imported rather than re-declared: the CLI's choices and the models' validation
+# must be the same tuple, or a mode could be accepted here and rejected there.
+EMBED_INIT_MODES = _EMBED_INIT_MODES
+
 DEVICE = torch.device("cpu")
 
 # One line of JSON per PPO update, appended live. `.jsonl` (not `.json`) because a
@@ -163,8 +197,9 @@ def run_dir_for(checkpoint_dir: str, arm: str, seed: int, run_tag: str = None) -
 
     `run_tag` is the third coordinate, and it is a DATA-SAFETY requirement rather
     than a convenience. arm+seed is no longer a unique run identity now that
-    `--grad-clip-mode` exists: re-running `--arm reservoir --seed 0` under
-    `per-group` would land on `reservoir_seed0/`, i.e. straight on top of the 20
+    `--grad-clip-mode` and `--embed-init-mode`/`--embed-scale` exist: re-running
+    `--arm reservoir --seed 0` under `per-group` would land on `reservoir_seed0/`,
+    i.e. straight on top of the 20
     completed runs (200 checkpoints) the results write-up is built from, and
     torch.save would overwrite each `step_N.pt` in place. `--run-tag per-group`
     sends the corrected re-run to `reservoir_seed0_per-group/` instead.
@@ -253,7 +288,8 @@ def apply_grad_clipping(model, grad_clip_mode: str = "global"):
     return total_norm, group_norms
 
 
-def build_model(arm: str, seed: int = 0):
+def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
+                embed_scale: float = 1.0):
     """Construct one experimental arm's model plus its optimizer.
 
     Both arms are exposed through the same `(init_state_fn, step_fn)` pair so the
@@ -265,9 +301,23 @@ def build_model(arm: str, seed: int = 0):
     not just the GRU's trainable init -- see the module docstring. It does NOT seed
     the trainable init on either arm: that comes from the global RNG, which
     `run_training` seeds before calling this.
+
+    `embed_init_mode`/`embed_scale` are handed to BOTH arms with the same values --
+    that is a control requirement, argued at length in models/embedding_init.py, not
+    a convenience. `OBS_MEAN` is passed in from `envs.mario_land_env` rather than
+    imported by the models, so the models stay game-agnostic (they take `obs_dim` as
+    an argument) and the measured constant stays next to the observation
+    construction it describes. Defaults reproduce the historical init exactly.
     """
+    if embed_init_mode not in EMBED_INIT_MODES:
+        raise ValueError(
+            f"unknown embed_init_mode: {embed_init_mode!r}; expected one of "
+            f"{EMBED_INIT_MODES}"
+        )
     if arm == "baseline":
-        model = PolicyValueGRU(obs_dim=OBS_DIM, embed_dim=32, hidden_dim=192, n_actions=N_ACTIONS)
+        model = PolicyValueGRU(obs_dim=OBS_DIM, embed_dim=32, hidden_dim=192, n_actions=N_ACTIONS,
+                               embed_init_mode=embed_init_mode, embed_scale=embed_scale,
+                               obs_mean=OBS_MEAN)
 
         # PolicyValueGRU.init_hidden returns a BARE tensor, but the collector and
         # the replay both unpack state as `logits, value, *state = step_fn(...)`,
@@ -284,7 +334,9 @@ def build_model(arm: str, seed: int = 0):
     elif arm == "reservoir":
         model = PolicyValueReservoir(obs_dim=OBS_DIM, embed_dim=32, reservoir_size=8192,
                                      n_actions=N_ACTIONS, use_tensor_train=True, tt_rank=8,
-                                     tt_n_cores=4, context_len=64, seed=seed)
+                                     tt_n_cores=4, context_len=64, seed=seed,
+                                     embed_init_mode=embed_init_mode, embed_scale=embed_scale,
+                                     obs_mean=OBS_MEAN)
         init_state_fn = model.init_state
 
         def step_fn(m, obs, state):
@@ -306,6 +358,11 @@ def build_model(arm: str, seed: int = 0):
     # with the model that produced them.
     model._arm = arm
     model._seed = seed
+    # Same reasoning as arm/seed: the embedding init is now part of a run's identity,
+    # so it is stamped where `save_checkpoint` can read it off the model that was
+    # actually built, not passed separately and possibly disagreeing.
+    model._embed_init_mode = embed_init_mode
+    model._embed_scale = float(embed_scale)
     return model, optimizer
 
 
@@ -331,6 +388,11 @@ def save_checkpoint(model, optimizer, step: int, path: str):
     getattr defaults ("global"/None) are the historical behaviour, so a model built
     outside `run_training` (every direct `build_model` caller, including tests)
     self-labels exactly as the 200 checkpoints already on disk implicitly are.
+
+    `embed_init_mode`/`embed_scale` are stamped for the identical reason, with the
+    identical getattr defaults ("legacy"/1.0 = the historical init): two checkpoints
+    with the same arm+seed but different embedding initialisations are not the same
+    experiment either.
     """
     if getattr(model, "_arm", None) == "reservoir":
         model.assert_reservoir_frozen()
@@ -338,7 +400,9 @@ def save_checkpoint(model, optimizer, step: int, path: str):
                 "step": step, "arm": getattr(model, "_arm", None),
                 "seed": getattr(model, "_seed", None),
                 "grad_clip_mode": getattr(model, "_grad_clip_mode", "global"),
-                "run_tag": getattr(model, "_run_tag", None)}, path)
+                "run_tag": getattr(model, "_run_tag", None),
+                "embed_init_mode": getattr(model, "_embed_init_mode", "legacy"),
+                "embed_scale": float(getattr(model, "_embed_scale", 1.0))}, path)
 
 
 def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
@@ -352,12 +416,18 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
     caller passes them.
 
     BACKWARD COMPATIBILITY, load-bearing: the 200 checkpoints already on disk were
-    written before `grad_clip_mode`/`run_tag` existed and contain NEITHER key.
-    Every read of the new keys therefore goes through `.get(...)` with the
-    historical default -- indexing them directly would turn all 20 completed runs
-    into unloadable files (and take `training/evaluate.py`, the eval matrix and the
-    write-up with them). A pre-existing checkpoint reads back as
-    grad_clip_mode="global", run_tag=None, which is precisely what it is.
+    written before `grad_clip_mode`/`run_tag`/`embed_init_mode`/`embed_scale`
+    existed and contain NONE of those keys. Every read of the new keys therefore
+    goes through `.get(...)` with the historical default -- indexing them directly
+    would turn all 20 completed runs into unloadable files (and take
+    `training/evaluate.py`, the eval matrix and the write-up with them). A
+    pre-existing checkpoint reads back as grad_clip_mode="global", run_tag=None,
+    embed_init_mode="legacy", embed_scale=1.0, which is precisely what it is.
+
+    Note the new keys change nothing about the RESTORE itself: `embed_init_mode`
+    describes how the embedding was INITIALISED, and `load_state_dict` overwrites
+    the embedding wholesale, so the labels are metadata for the results table rather
+    than something this function has to act on.
 
     `expected_grad_clip_mode` WARNS rather than raises: resuming a run under a
     different clipping rule produces a checkpoint whose optimiser state was
@@ -448,7 +518,8 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                  gamma: float = 0.99, lam: float = 0.95, clip_eps: float = 0.2,
                  value_coef: float = 0.5, entropy_coef: float = 0.01,
                  novelty_coef: float = 0.05,
-                 grad_clip_mode: str = "global", run_tag: str = None):
+                 grad_clip_mode: str = "global", run_tag: str = None,
+                 embed_init_mode: str = "legacy", embed_scale: float = 1.0):
     """Collect -> GAE -> replay-with-gradients -> one PPO update, repeated.
 
     `n_envs` is accepted (it is part of the CLI/interface contract and of the
@@ -469,10 +540,24 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                   learning; see the module docstring for the measurements (337x
                   larger readout updates, clip-coefficient max/median 2.63e5).
 
+    `embed_init_mode`/`embed_scale` select the embedding initialisation, applied to
+    BOTH arms with the same values:
+
+      "legacy", 1.0  (default) the historical init, bit-identical to what every
+                  existing checkpoint was produced under. Does not change, ever.
+      "centered"  embedding.bias := -(W @ OBS_MEAN). Removes the observation's DC
+                  component, which the LIF neuron otherwise amplifies 4.3589x over
+                  the AC component and freezes into a per-unit membrane offset.
+                  Measured over 8 seeds: silent-unit fraction 44.7403% -> 1.7532%.
+      embed_scale multiplies the weight-init std (3.0 -> 3/sqrt(obs_dim*embed_dim)
+                  on the reservoir arm). On its own it is a palliative, not a fix:
+                  it scales DC and AC together and floors at ~20% silent.
+
     `run_tag` appends a third coordinate to the output directory so a re-run under
-    different settings cannot overwrite the completed matrix. Both are recorded in
-    every checkpoint and every log line, because a run whose clipping rule is not
-    written down next to its numbers cannot be interpreted later.
+    different settings cannot overwrite the completed matrix. All of these are
+    recorded in every checkpoint and every log line, because a run whose clipping
+    rule and embedding init are not written down next to its numbers cannot be
+    interpreted later.
 
     Checkpoints and the per-update JSONL log go to `run_dir_for(checkpoint_dir,
     arm, seed, run_tag)`, not to `checkpoint_dir` itself, so concurrent/sequential
@@ -483,11 +568,17 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
         raise ValueError(
             f"unknown grad_clip_mode: {grad_clip_mode!r}; expected one of {GRAD_CLIP_MODES}"
         )
+    if embed_init_mode not in EMBED_INIT_MODES:
+        raise ValueError(
+            f"unknown embed_init_mode: {embed_init_mode!r}; expected one of "
+            f"{EMBED_INIT_MODES}"
+        )
     # Seeded before build_model, so it covers the trainable init on BOTH arms (and
     # the action sampling that follows). The reservoir's own frozen-weight seed is
     # a separate argument, threaded below -- see the module docstring.
     torch.manual_seed(seed)
-    model, optimizer = build_model(arm, seed=seed)
+    model, optimizer = build_model(arm, seed=seed, embed_init_mode=embed_init_mode,
+                                   embed_scale=embed_scale)
     # Stamped onto the model for the same reason arm/seed are (build_model): a
     # checkpoint's labels are then structurally incapable of disagreeing with the
     # run that produced it.
@@ -598,6 +689,11 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
             _append_log(log_path, {
                 "arm": arm, "seed": seed, "step": step, "update": stats["updates"],
                 "grad_clip_mode": grad_clip_mode, "run_tag": run_tag,
+                # On every line for the same reason grad_clip_mode is: a learning
+                # curve whose embedding init is unknown cannot be compared with
+                # another. Pre-existing log files simply lack these keys, which reads
+                # back as the historical ("legacy", 1.0) exactly as it should.
+                "embed_init_mode": embed_init_mode, "embed_scale": float(embed_scale),
                 **{k: v for k, v in stats.items() if k not in ("final_step", "updates")},
             })
             if step - last_checkpoint_step >= checkpoint_every:
@@ -613,7 +709,8 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     # when the periodic save already landed on this exact step.
     save_checkpoint(model, optimizer, step, os.path.join(run_dir, f"step_{step}.pt"))
     stats.update({"arm": arm, "seed": seed, "run_dir": run_dir, "log_path": log_path,
-                  "grad_clip_mode": grad_clip_mode, "run_tag": run_tag})
+                  "grad_clip_mode": grad_clip_mode, "run_tag": run_tag,
+                  "embed_init_mode": embed_init_mode, "embed_scale": float(embed_scale)})
     return stats
 
 
@@ -644,18 +741,41 @@ if __name__ == "__main__":
                              "gradient down to 3.5e-09 and effectively freezes 99.7%% of "
                              "the trainable budget. Measured effect of switching: 337x "
                              "larger readout parameter updates")
+    parser.add_argument("--embed-init-mode", choices=list(EMBED_INIT_MODES), default="legacy",
+                        help="observation-embedding initialisation, applied identically to "
+                             "BOTH arms. 'legacy' (default) is the init every existing "
+                             "checkpoint was produced under, kept bit-identical so those "
+                             "runs stay reproducible. 'centered' sets embedding.bias to "
+                             "-(W @ OBS_MEAN), i.e. embeds the DC-removed observation -- "
+                             "exact because the embedding is linear, and free because the "
+                             "bias already exists. Real observations are 77.70%% DC energy, "
+                             "and the LIF neuron amplifies DC over AC by 4.3589x, which "
+                             "freezes a per-unit membrane offset (std 0.943583, threshold "
+                             "1.0) that leaves 14.93%% of units silent forever and 14.50%% "
+                             "saturated. Measured effect over 8 seeds: silent-unit fraction "
+                             "44.7403%% -> 1.7532%%, spike rate 0.024351 -> 0.020912, zero "
+                             "saturated units")
+    parser.add_argument("--embed-scale", type=float, default=1.0,
+                        help="multiplier on the embedding's weight-init std (default 1.0 = "
+                             "the historical init; 3.0 gives 3/sqrt(obs_dim*embed_dim) on "
+                             "the reservoir arm). A PALLIATIVE ON ITS OWN, not a fix: it "
+                             "scales the DC and AC components together, so a sweep floors "
+                             "at ~20%% silent units even at 32x. Use it with "
+                             "--embed-init-mode centered, not instead of it")
     parser.add_argument("--run-tag", default=None,
                         help="optional third coordinate on the output directory: "
                              "{checkpoint-dir}/{arm}_seed{seed}_{run-tag}/. USE IT for any "
                              "run that is not a plain default-settings run -- arm+seed "
                              "alone is no longer a unique identity now that "
                              "--grad-clip-mode exists, so an untagged corrected re-run "
-                             "would overwrite the completed matrix in place")
+                             "would overwrite the completed matrix in place. This now "
+                             "covers --embed-init-mode/--embed-scale too")
     args = parser.parse_args()
     stats = run_training(arm=args.arm, rom_path=args.rom, total_steps=args.steps,
                          n_envs=args.n_envs, rollout_len=args.rollout_len,
                          checkpoint_every=args.checkpoint_every,
                          checkpoint_dir=args.checkpoint_dir,
                          resume_from=args.resume_from, seed=args.seed,
-                         grad_clip_mode=args.grad_clip_mode, run_tag=args.run_tag)
+                         grad_clip_mode=args.grad_clip_mode, run_tag=args.run_tag,
+                         embed_init_mode=args.embed_init_mode, embed_scale=args.embed_scale)
     print(stats)

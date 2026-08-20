@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from models.spiking_reservoir import SpikingReservoir
 from models.actor_critic_readout import ActorCriticReadout
+from models.embedding_init import EMBED_INIT_MODES, init_embedding_bias_
 
 # Reservoir buffers that are transient STATE rather than frozen WEIGHTS, and so are
 # excluded from the bit-identity snapshot below. snntorch's Leaky keeps its membrane
@@ -23,7 +24,8 @@ class PolicyValueReservoir(nn.Module):
 
     def __init__(self, obs_dim=12, embed_dim=32, reservoir_size=8192, n_actions=10,
                  use_tensor_train=True, tt_rank=8, tt_n_cores=4, context_len=64, seed=0,
-                 d_model=16, n_layers=2, n_heads=4):
+                 d_model=16, n_layers=2, n_heads=4,
+                 embed_init_mode="legacy", embed_scale=1.0, obs_mean=None):
         # d_model=16 (not ActorCriticReadout's own 64 default) is REQUIRED by the
         # matched-parameter-budget rule (spec §5): this arm's trainable count must
         # land within 10% of the GRU baseline's. The readout's in_proj maps the full
@@ -34,8 +36,15 @@ class PolicyValueReservoir(nn.Module):
         # d_model=16/n_layers=2 this arm is 139,179 params, ratio 1.049. Enforced by
         # tests/test_parameter_parity.py -- retune these, never the tolerance.
         super().__init__()
+        if embed_init_mode not in EMBED_INIT_MODES:
+            raise ValueError(
+                f"unknown embed_init_mode: {embed_init_mode!r}; expected one of "
+                f"{EMBED_INIT_MODES}"
+            )
         self.reservoir_size = reservoir_size
         self.context_len = context_len
+        self.embed_init_mode = embed_init_mode
+        self.embed_scale = float(embed_scale)
         self.embedding = nn.Linear(obs_dim, embed_dim)
         # Same input-current calibration rationale as spiking_backprop_lm.py: scale
         # the embedding's init so the induced reservoir input current lands in the
@@ -54,14 +63,40 @@ class PolicyValueReservoir(nn.Module):
         # i.e. 3.65x, under the old 1/sqrt(embed_dim) init), giving a mean spike rate
         # of 2.4% -- inside the ~2% band spiking_reservoir.py documents as healthy.
         #
-        # KNOWN GAP: that measurement assumes standard-normal observations. The real
-        # obs vector's scale comes from the env's normalization (Task 5), so a residual
-        # calibration gap may remain until real observation statistics are available;
-        # this init is correct STRUCTURALLY (right fan-in) but its scalar has only been
-        # validated against synthetic input. Re-measure against real obs before
-        # trusting the spike rate in the actual experiment.
-        nn.init.normal_(self.embedding.weight, std=1.0 / math.sqrt(obs_dim * embed_dim))
-        nn.init.zeros_(self.embedding.bias)
+        # KNOWN GAP -- NOW MEASURED, and the measurement did not agree. That 0.3163
+        # figure was taken against synthetic N(0,1) observations. Against 6,000 REAL
+        # rollout steps the induced input-current std is 0.128683, not ~0.3163, and
+        # the two calibration targets this comment states -- "input-current std ~0.3"
+        # AND "spike rate ~2%" -- turn out to be MUTUALLY INCOMPATIBLE under real
+        # observations. The spike-rate target is the one that corresponds to healthy
+        # dynamics, so that is the one to calibrate against; the 0.3 figure is kept
+        # above only as the historical record of how this scalar was chosen.
+        #
+        # The real problem is not the scalar at all, it is the DC component:
+        #   * real observations are dominated by their own mean -- 77.70% of the
+        #     observation energy is DC (||E[obs]||^2 = 1.331336 of E||obs||^2 =
+        #     1.713384), so 76.11% of the reservoir's input-current variance is DC;
+        #   * the LIF neuron integrates DC with gain 1/(1-beta) = 10.0 but AC with
+        #     gain 1/sqrt(1-beta^2) = 2.2942, a 4.3589x amplification favouring DC;
+        #   * so every unit acquires a FROZEN membrane offset, std 0.943583 across
+        #     units, range [-3.5080, +3.4847], against a threshold of 1.0. Measured:
+        #     14.93% of units sit permanently below -threshold (silent forever) and
+        #     14.50% permanently above (saturated).
+        #   * `embed_scale` alone CANNOT fix this -- it multiplies DC and AC together,
+        #     so a scale sweep floors at ~20% silent even at 32x the default.
+        # `embed_init_mode="centered"` removes the DC term instead; see
+        # models/embedding_init.py for the algebra and for why BOTH arms get it.
+        #
+        # STRICTLY ADDITIVE AND OFF BY DEFAULT: embed_init_mode="legacy" with
+        # embed_scale=1.0 is BIT-IDENTICAL to the two lines that were here before
+        # (same RNG draws in the same order, same std expression, same zeroed bias),
+        # because 200 existing checkpoints have to stay loadable and reproducible.
+        nn.init.normal_(self.embedding.weight,
+                        std=embed_scale / math.sqrt(obs_dim * embed_dim))
+        # legacy bias for THIS arm is an explicit zero (it always was); the centered
+        # branch is shared with the baseline arm verbatim.
+        init_embedding_bias_(self.embedding, embed_init_mode, obs_mean,
+                             legacy_bias_init=nn.init.zeros_)
         self.reservoir = SpikingReservoir(
             reservoir_size=reservoir_size, input_dim=embed_dim, seed=seed,
             use_tensor_train=use_tensor_train, tt_rank=tt_rank, tt_n_cores=tt_n_cores,

@@ -34,6 +34,35 @@ from envs import boot, ram_map
 
 OBS_DIM = 12
 
+# Per-dimension MEAN of the real observation vector, in the same slot order as
+# `_build_observation` below.
+#
+# WHY IT LIVES HERE, next to OBS_DIM and `_build_observation` rather than in
+# `models/`: it is a property of the OBSERVATION CONSTRUCTION, not of any model.
+# The models take `obs_dim` as an argument and are deliberately game-agnostic
+# (importing this module into `models/` would drag gymnasium + PyBoy into every
+# model test), so `training/train.py` -- the layer that already knows both the env
+# and the models -- reads this constant and passes it down. Keeping it in this file
+# means whoever edits `_build_observation` sees it in the same screenful.
+#
+# PROVENANCE: measured over 6,000 real rollout steps on Super Mario Land --
+# 3,000 under a trained policy and 3,000 under a uniform-random policy, pooled.
+# It is NOT a guess and NOT derived from the [-1, 1] observation_space bounds:
+# real observations are strongly non-negative and DC-dominated
+# (||E[obs]||^2 = 1.331336 against E||obs||^2 = 1.713384, i.e. 77.70% of the
+# observation energy is the mean).
+#
+# RE-MEASURE THIS IF `_build_observation` CHANGES. Adding a slot, rescaling a
+# normaliser, changing `frame_skip`, or wiring the reserved slots 9-11 all move
+# these numbers, and a stale mean silently degrades `embed_init_mode="centered"`
+# from an exact correction into an approximate one. Slots 9-11 are exactly 0.0
+# because they are the documented reserved-zero slots.
+OBS_MEAN = (
+    0.006229, 0.831424, 0.001833, -0.000167, 0.136833, 0.755903,
+    0.193796, 0.111167, 0.000400, 0.000000, 0.000000, 0.000000,
+)
+assert len(OBS_MEAN) == OBS_DIM, "OBS_MEAN must carry one entry per observation slot"
+
 # --- reward -------------------------------------------------------------------
 # read_level_progress() is in pixels but only accurate to one 16px camera block, so
 # one block of real level progress is worth exactly +1.0. Measured at frame_skip=4,
