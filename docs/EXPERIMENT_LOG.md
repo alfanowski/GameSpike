@@ -1100,3 +1100,106 @@ not an afterthought.
 - **No committed training launcher existed.** v1's parallelism was ad hoc, which is
   the direct cause of the §9 hazards. `scripts/run_training_matrix.py` is being
   written with tests for v2 so this is reproducible rather than remembered.
+
+### 14.11 v2 execution checklist — written to be runnable by someone who was not here
+
+The previous session stopped mid-experiment and left no closing entry, which cost
+this session roughly an hour of reconstruction. This subsection exists so that does
+not happen twice. **Every command below has been checked against the actual argparse
+surface of the file it invokes, not against documentation.** Run from the repository
+root with the venv python at `.venv/bin/python`.
+
+Standing preamble for every command:
+
+```
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+export ROM="/Users/alfanowski/Desktop/Super Mario Land (World).gb"
+```
+
+**Step 0 — collision check (do this first, every time).** `ps aux | grep -i train`
+must show nothing you did not start, and nothing under `checkpoints_v2/` may have an
+mtime newer than your own last write. §14.1 explains why.
+
+**Step 1 — untrained controls, both arms, centred init (20 fast runs, `--steps 0`).**
+Required because `RESULTS.md` §2.3's `init` selection and §4.1's equivalence control
+must be built under the SAME initialisation as the trained arms; the existing
+`checkpoints_init/` was built under `legacy` and is the wrong control for v2 (§14.9).
+
+```
+for arm in baseline reservoir; do for s in $(seq 0 9); do
+  .venv/bin/python -m training.train --arm $arm --rom "$ROM" --steps 0 --seed $s \
+    --checkpoint-dir checkpoints_v2_init \
+    --grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0
+done; done
+```
+
+**Step 2 — the reservoir arm, 10 seeds, full length.** Long pole, ~2.1-3.5 h at 10-way
+parallelism (§14.10).
+
+```
+.venv/bin/python scripts/run_training_matrix.py \
+  --arms reservoir --seeds 0-9 --rom "$ROM" \
+  --steps 1000000 --checkpoint-every 100000 --checkpoint-dir checkpoints_v2 \
+  --grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0 --jobs 10
+```
+
+**Step 3 — the baseline arm, 10 seeds, full length.** Identical flags, `--arms baseline`.
+The clipping and embedding treatments are applied to BOTH arms deliberately: a
+treatment only one arm receives is not a control (§12, and `train.py`'s docstring).
+
+**Fallback if `scripts/run_training_matrix.py` does not exist or is broken** — the
+launcher is a convenience, not a dependency. One run is:
+
+```
+.venv/bin/python -m training.train --arm reservoir --rom "$ROM" \
+  --steps 1000000 --checkpoint-every 100000 --checkpoint-dir checkpoints_v2 --seed 0 \
+  --grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0
+```
+
+Backgrounding ten of these by hand is what v1 did and is what produced the §9
+hazards; if you do it, at minimum check each run directory does not already exist
+before launching into it.
+
+**Step 4 — evaluation matrix**, 120 evaluations, same protocol as v1 (`RESULTS.md`
+§2.3): 30 episodes, eval seed 0, both recurrent-state regimes, three selections.
+
+```
+.venv/bin/python scripts/run_eval_matrix.py --rom "$ROM" \
+  --episodes 30 --eval-seed 0 --jobs 8 \
+  --checkpoint-dir checkpoints_v2 --init-checkpoint-dir checkpoints_v2_init \
+  --results-dir results_v2
+```
+
+It is resumable and its writes are atomic (`os.replace`), so it is safe to kill and
+restart. Add `--dry-run` first to see the job list.
+
+**Step 5 — statistics.**
+
+```
+.venv/bin/python -m analysis.aggregate_results \
+  --results-dir results_v2 --checkpoint-dir checkpoints_v2
+.venv/bin/python -m analysis.aggregate_results \
+  --results-dir results_v2 --checkpoint-dir checkpoints_v2 --json > /tmp/v2_report.json
+```
+
+Exact permutation over all C(20,10) = 184,756 splits, exact Mann-Whitney, percentile
+bootstrap at 20,000 resamples with `default_rng(0)` — identical to v1, so the two
+versions are comparable line for line.
+
+**Step 6 — write `RESULTS.md` v2 BENEATH v1.** Never edit v1's numbers. v2 must mirror
+v1's table shapes exactly (§3 primary result, §4.1/§4.2 controls, §5 per-step
+decomposition, §8 efficiency) so the two are readable side by side, and must state the
+`--embed-scale 3.0` term that §12 of `RESULTS.md` omitted (§14.8).
+
+**Step 7 — open a PR and DO NOT merge it.** §13: headline-bearing changes are left open
+for the repository owner. `gh` is authenticated as `alfanowski` with `repo` scope.
+
+**Things that will bite you, all of them already paid for once:**
+- The final checkpoint is `step_1000064.pt`, not `step_1000000.pt` (§2). Globbing for a
+  round number silently matches nothing.
+- `--embed-init-mode centered` WITHOUT `--embed-scale 3.0` is worse than doing nothing
+  (§14.8).
+- Do not `git checkout`/`git switch` in this working directory while training is live
+  (§9) — use a worktree.
+- Running the test suite without `MARIO_LAND_ROM_PATH` set silently skips 94 tests and
+  still prints a pass (§14.10).
