@@ -1175,6 +1175,15 @@ restart. Add `--dry-run` first to see the job list.
 
 **Step 5 — statistics.**
 
+> **⚠ ANNOTATION ADDED 2026-08-21 (§19.1) — DO NOT RUN THE COMMAND BELOW AS WRITTEN.**
+> It points `--results-dir` at the PARENT of where `run_eval_matrix.py` actually writes,
+> so it finds zero evaluation files, skips both regimes, and then prints a healthy-looking
+> training-log summary underneath — **output that reads as success with no comparison in
+> it at all.** The eval driver writes to `{results-dir}/{final,best,init}/`. Use
+> **`scripts/run_v2_analysis.sh`**, which runs the aggregator once per selection
+> directory and guards on all 120 results being present. The original text is left below
+> unaltered, per the append-only rule; §19.1 is the correction of record.
+
 ```
 .venv/bin/python -m analysis.aggregate_results \
   --results-dir results_v2 --checkpoint-dir checkpoints_v2
@@ -2545,3 +2554,50 @@ will either confirm or correct:
    0.200. So neither shipped fix regulates the operating point over a full run, which is
    precisely the open problem §15.5 stated and A9 was pre-registered to measure rather
    than extrapolate.
+
+### 20.6 The guard's false-pass risk, verified rather than assumed, BEFORE either guard fires
+
+§19.4 established that the running pipeline's completeness guard can pass falsely if a
+stray tagged run directory stands in for a genuinely missing seed, and that the fix could
+not be applied to the executing script (§19.3). "Closed by inspection" is only worth
+anything if the inspection is written down, so here it is, performed at **00:20** —
+roughly three hours before guard 1 fires and four before guard 2.
+
+**A false pass requires TWO conditions to hold at once:** a stray directory matching
+`{arm}_seed*` beyond the ten canonical names, **and** that directory containing a
+`step_1000064.pt`. Both were checked independently:
+
+| check | result |
+|---|---|
+| every entry under `checkpoints_v2/` | exactly 10, all `reservoir_seed{0-9}` |
+| anchored count `-name 'reservoir_seed[0-9]'` | **10** |
+| anchored count `-name 'baseline_seed[0-9]'` | **0** (stage 2 not started) |
+| entries matching **neither** anchored pattern | **0** |
+| the running script's own unanchored `count_final`, as it stands now | reservoir **0**, baseline **0** |
+| `step_1000064.pt` files anywhere under `checkpoints_v2/` | **0** |
+| live `training.train` processes passing `--run-tag` | **0** |
+| launcher's `--checkpoint-dir` | plain `checkpoints_v2`, no tag |
+
+**The running chain structurally cannot create a suffixed directory**, because
+`run_dir_for` appends a tag only when `--run-tag` is passed and nothing in the chain
+passes one. The only actor that could create one is an operator or an agent writing into
+`checkpoints_v2/` by hand, which is now the sole thing standing between this guard and
+correctness — so it is stated as a standing prohibition: **do not launch a `--run-tag`
+run into `checkpoints_v2/` while the matrix is live.**
+
+**Converted from a point-in-time check into a continuously enforced invariant.** A
+separate orphaned watcher polls every 60 s and fires on the first of: a stray entry
+appearing under `checkpoints_v2/`, a new `ABORT` in `pipeline_v2.log`, or both arms
+reaching ten finals. Its counting is **anchored** (`-name 'reservoir_seed[0-9]'`), i.e.
+deliberately implemented differently from the guard it is checking, so it cross-checks
+the guard rather than reproducing its bug.
+
+**It false-positived immediately on its first launch, and the reason is worth recording.**
+Its `ABORT` check matched a line this session had itself written into `pipeline_v2.log`
+at 00:07:27 while *deliberately testing* that `run_v2_analysis.sh` refuses to aggregate
+0/120 results. The refusal was correct; the watcher simply had no notion of "since when".
+Fixed by recording the log's line count at watcher start and only considering lines
+appended after it. **This is the same family as §17.4's `pgrep -f` watcher matching its
+own command line: a watcher that inspects shared mutable state must scope itself to
+events after its own start, or it will observe its own history and mistake it for the
+present.**
