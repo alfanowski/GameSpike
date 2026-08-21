@@ -3450,3 +3450,34 @@ larger result than the one the pilot was built to chase. The stop is what the pr
 required, and the pre-registration was written precisely so that this call would not be made
 by whoever was looking at the numbers at the time. **The decision to re-register and re-run is
 the project owner's**, and it should rest on this section rather than around it.
+
+### 23.14 §23.13(b) measured properly, and promoted into `RESULTS.md`
+
+§23.13(b) recorded the fixture-provenance finding from a subagent's report and quoted
+**3.61%** residual DC. Measured directly, against `envs.mario_land_env.OBS_MEAN` and the
+committed fixture, the figure is **3.5208%** of the reservoir's post-centring input energy.
+The per-dimension maximum difference of **0.081922** (slot 5) and the `‖OBS_MEAN‖² =
+1.331336` identity with v1 §7.1's published `‖E[obs]‖²` both reproduce exactly.
+
+**The quantification §23.13(b) lacked, and the reason this was promoted out of the ledger:**
+the shipped `centered` init leaves an induced per-unit membrane offset of std **0.299082**
+(seeds 0-2: 0.298642, 0.334427, 0.264176) on the committed fixture, against **exactly
+0.000000** when centred on the fixture's own mean — confirming v1 §7.2's algebraic-exactness
+proof holds and locating the discrepancy entirely in *which collection the constant was
+fitted to*. Against `RESULTS.md` §19's first measured checkpoint (offset std 0.5037 at
+100,096 steps, seed 0), **about 59% of that early figure is fixture mismatch rather than
+training drift**; against its final checkpoint (4.2223) it is about 7%.
+
+Because that is a caveat on a **merged, published** section rather than on this pilot,
+it is now recorded where a reader of that section will find it: **`docs/RESULTS.md` §24**,
+appended beneath v2 and editing none of §19's numbers. §24 states what it changes (the early
+trajectory, in the reservoir's favour), what it does not (every verdict, all of which are
+taken at the final checkpoint; A7 and A9 both stay far from their band edges; the runaway is
+still a factor of 14 and the spike rate still ends at 0.194), and that no remedy is applied
+because choosing between the three available ones changes what a published number means and
+is a decision rather than a correction.
+
+**This closes the resonate-and-fire pilot.** Its own verdict is §23.13: pre-flight negative,
+no training run, GA/GA2/GB never measured. Nothing further is pending on it, and the three
+candidate constructions named in §23.13 remain un-run and un-validated, each needing its own
+pre-registration before any of them is attempted.
