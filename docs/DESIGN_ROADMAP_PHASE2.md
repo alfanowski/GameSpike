@@ -1411,6 +1411,20 @@ the control §2.2 C2 specifies.
 If they are identical, as expected, the redundancy is harmless: ten distinct untrained
 policies, each scored on both tasks, is exactly what `R_init(j)` needs.
 
+> **VERIFIED 2026-08-21: the invariant HOLDS.** Zero-step runs through `run_training` at
+> seeds 0 and 1, both tasks, hashing every model tensor: `--task 1-1` and `--task 2-1`
+> produce **bit-identical weights** at the same seed, while different seeds differ (the
+> sanity check that the test can fail at all). Each checkpoint correctly self-records its own
+> task.
+>
+> **A methodological trap, recorded because it nearly produced a false alarm.** The first
+> attempt checked this by calling `build_model` twice in one process — which *appeared* to
+> violate the invariant. `build_model` does **not** reseed; `run_training` calls
+> `torch.manual_seed(seed)` before it. Two consecutive `build_model` calls therefore draw
+> from a continuing global RNG stream and differ for a reason that has nothing to do with the
+> task axis. **The invariant must be checked through `run_training`, not through
+> `build_model`** — anyone re-running this check should start there.
+
 ### 15.3.2 Sizing, measured on this machine before launch
 
 Two numbers decide whether ≈20M env steps fits the ≈1.5–2 h estimate, and both were measured
@@ -1462,14 +1476,17 @@ Stated now so they cannot be claimed later:
   gap is smaller than first assumed, and it was measured rather than left vague.** Phase 2a
   boots every task through PyBoy's wrapper (`start_game(world_level=…)`, §14.1) so both tasks
   share one start mechanism, whereas Phase 1 booted from power-on through `envs/boot.py`.
-  Compared directly at the start of 1-1, the two paths agree on **every** state field —
-  world/level, Mario's X and Y, lives, camera block, progress (242), scroll, powerup — **except
-  the level timer, which reads 396 under the power-on boot and 399 under the wrapper**, a
-  three-game-second offset from the different settle window. Short-horizon behaviour is
-  identical too: 240 frames of holding right yields progress 369, lives 2, y 134 from both.
-  The practical residue is that observation slot 5 (`timer/400`) sits a constant 0.0075
-  higher under the Phase 2a path. That is small, it is *not zero*, and no table should place
-  Phase 1's and Phase 2a's 1-1 numbers side by side without this sentence next to it.
+  Compared directly at the start of 1-1 **through the shipped env**, the two paths agree on
+  **every** state field — world/level, Mario's X and Y, lives, progress (242), score — **except
+  the level timer, which reads 396 under the power-on boot and 400 under the wrapper.** The
+  power-on path spends 400 frames skipping the title screen and level intro, during which the
+  game clock is already running; the wrapper path lands on a controllable frame immediately
+  and settles only 8. Short-horizon behaviour is identical: 240 frames of holding right yields
+  progress 369, lives 2, y 134 from both.
+  The practical residue is that observation slot 5 (`timer/400`) starts at **1.00 under Phase
+  2a against 0.99 under Phase 1** — a constant 0.01 offset in one of twelve slots. Small, *not
+  zero*, and no table should place Phase 1's and Phase 2a's 1-1 numbers side by side without
+  this sentence next to it.
 - **It says nothing about Kirby or about cross-title transfer.** That is Phase 2b, and
   §14.7 already raised its cost.
 
