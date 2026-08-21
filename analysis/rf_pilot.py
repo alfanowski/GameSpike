@@ -76,7 +76,8 @@ from analysis.pilot_diagnostics import (REAL_OBS_PATH,  # noqa: E402
 from analysis.reservoir_health import (A9_TRAJECTORY_HEADER,  # noqa: E402
                                        AMBIGUOUS_PHRASE, EXPECTED_FINAL_STEP,
                                        a9_run_stats, a9_trajectory_row,
-                                       band_verdict, parse_seed_spec, run_dir)
+                                       band_verdict, induced_membrane_offset,
+                                       parse_seed_spec, run_dir)
 from envs.mario_land_env import OBS_MEAN  # noqa: E402
 
 # --------------------------------------------------------------------------- #
@@ -471,8 +472,10 @@ def frequency_construction(seed):
             "omega_max": float(reservoir.omega.max())}
 
 
-def init_operating_point(seed, embed_scale, neuron_model, obs):
-    """Initial (step-0) silent/rate/saturated for one seed at one embed scale.
+def init_operating_point(seed, embed_scale, neuron_model, obs, mu=None):
+    """The step-0 operating point for one seed at one embed scale, in the SAME
+    columns `checkpoint_operating_point` reports so an init row can head a
+    trajectory table (§23.8) rather than sitting in a separate one.
 
     The construction sequence is `reservoir_at`'s, which is `run_training`'s:
     `torch.manual_seed(seed)` then `build_model(..., seed=seed, ...)`, because the
@@ -481,12 +484,28 @@ def init_operating_point(seed, embed_scale, neuron_model, obs):
     Mirroring it here rather than re-deriving it is the point -- §23.4's criterion
     is defined against "the LIF v2 arm's initial spike rate on the same fixture,
     MEASURED BY THE SAME INSTRUMENT".
+
+    `mu` is optional because the calibration only needs the spike statistics; pass
+    it to get the weight-norm and induced-offset columns too, which at a `centered`
+    init are the zero point §23.1's drift table is read against.
     """
     model, _ = reservoir_at(seed, RF_INIT_EMBED_MODE if neuron_model == "rf"
                             else LIF_INIT_EMBED_MODE, embed_scale,
                             neuron_model=neuron_model)
     silent, rate, saturated = silent_fraction(model, obs)
-    return {"silent": silent, "spike_rate": rate, "saturated": saturated}
+    row = {"silent": silent, "spike_rate": rate, "saturated": saturated,
+           "neuron_model": neuron_model, "frozen_drift": None}
+    if mu is None:
+        return row
+    weight = model.embedding.weight.detach()
+    bias = model.embedding.bias.detach()
+    dc = weight @ mu + bias
+    beta = float(model.reservoir.lif.beta)
+    omega = model.reservoir.omega if neuron_model == "rf" else None
+    offset = induced_membrane_offset(model.reservoir.W_in @ dc, beta, omega)
+    row.update({"w_norm": weight.norm().item(), "dc_norm": dc.norm().item(),
+                "offset_std": offset.std().item()})
+    return row
 
 
 # --------------------------------------------------------------------------- #
@@ -495,11 +514,11 @@ def init_operating_point(seed, embed_scale, neuron_model, obs):
 
 def _fmt(value, spec, width=None, missing="n/a"):
     """Format a possibly-missing number without special-casing at every call
-    site. A missing measurement prints as `n/a` at the same column width, so a
-    partial table still lines up with a complete one."""
-    if value is None:
-        return f"{missing:>{width}}" if width else missing
-    return format(value, spec)
+    site. `width` right-aligns BOTH branches -- a missing measurement prints as
+    `n/a` in the same column as a present one, so a partial table lines up with a
+    complete one instead of drifting a column per absent seed."""
+    text = missing if value is None else format(value, spec)
+    return f"{text:>{width}}" if width else text
 
 
 def _pass_fail(ok):
@@ -593,8 +612,8 @@ def stage_preflight(seeds):
 
     print(f"\n  LIF v2 init reference ({LIF_INIT_EMBED_MODE} @ "
           f"{LIF_INIT_EMBED_SCALE}, same fixture, same seeds, same instrument)")
-    print(f"\n  {'run':<10}{'silent':>11}{'spike rate':>14}{'saturated':>12}")
-    print("  " + "-" * 47)
+    print(f"\n  {'run':<10}{'silent':>10}{'spike rate':>14}{'saturated':>11}")
+    print("  " + "-" * 45)
     lif_rows = []
     for seed in seeds:
         row = init_operating_point(seed, LIF_INIT_EMBED_SCALE, "lif", obs)
@@ -603,14 +622,14 @@ def stage_preflight(seeds):
               f"{row['spike_rate']:>14.6f}{row['saturated']:>11.4%}")
     lif_rate = mean_or_none([r["spike_rate"] for r in lif_rows])
     lif_silent = mean_or_none([r["silent"] for r in lif_rows])
-    print(f"  {'mean':<10}{lif_silent:>10.4%}{lif_rate:>14.6f}"
+    print(f"  {'MEAN':<10}{lif_silent:>10.4%}{lif_rate:>14.6f}"
           f"{mean_or_none([r['saturated'] for r in lif_rows]):>11.4%}")
 
     print(f"\n  resonate-and-fire grid ({RF_INIT_EMBED_MODE} init, "
           "neuron_model=rf), per seed and seed-mean")
-    print(f"\n  {'scale':<8}{'run':<8}{'silent':>11}{'spike rate':>14}"
-          f"{'saturated':>12}{'|log ratio|':>14}")
-    print("  " + "-" * 67)
+    print(f"\n  {'scale':<8}{'run':<8}{'silent':>10}{'spike rate':>14}"
+          f"{'saturated':>11}{'|log ratio|':>14}")
+    print("  " + "-" * 65)
     grid_means = []
     for scale in EMBED_SCALE_GRID:
         rows = []
@@ -629,7 +648,7 @@ def stage_preflight(seeds):
         _, criterion = select_embed_scale([(scale, rate)], lif_rate)
         grid_means.append({"scale": scale, "spike_rate": rate, "silent": silent,
                            "saturated": saturated, "criterion": criterion})
-        print(f"  {'':<8}{'mean':<8}{silent:>10.4%}{rate:>14.6f}"
+        print(f"  {'':<8}{'MEAN':<8}{silent:>10.4%}{rate:>14.6f}"
               f"{saturated:>11.4%}{_fmt(criterion, '.4f', 14)}")
         print()
 
@@ -985,7 +1004,7 @@ def stage_verdict(rf_checkpoint_dir, lif_checkpoint_dir, rf_results_dir,
 
     section_unconditional(rf_traj, lif_traj, seeds, rf_checkpoint_dir,
                           lif_checkpoint_dir, rf_results_dir, lif_results_dir,
-                          obs, embed_scale)
+                          obs, mu, embed_scale)
     return ga, ga2, gb, decision
 
 
@@ -995,7 +1014,7 @@ def stage_verdict(rf_checkpoint_dir, lif_checkpoint_dir, rf_results_dir,
 
 def section_unconditional(rf_traj, lif_traj, seeds, rf_checkpoint_dir,
                           lif_checkpoint_dir, rf_results_dir, lif_results_dir,
-                          obs, embed_scale):
+                          obs, mu, embed_scale):
     print("\n" + "=" * 78)
     print("REPORTED UNCONDITIONALLY, WHATEVER THE VERDICTS (§23.8)")
     print("    no band, no gate -- these exist so the pilot is readable by someone")
@@ -1021,13 +1040,8 @@ def section_unconditional(rf_traj, lif_traj, seeds, rf_checkpoint_dir,
                 continue
             any_rows = True
             if label.startswith("resonate") and embed_scale is not None:
-                init = init_operating_point(seed, embed_scale, "rf", obs)
-                print(a9_trajectory_row(f"seed{seed}", {
-                    "step": "init", "silent": init["silent"],
-                    "spike_rate": init["spike_rate"],
-                    "saturated": init["saturated"], "w_norm": float("nan"),
-                    "dc_norm": float("nan"), "offset_std": float("nan"),
-                    "frozen_drift": None}))
+                init = init_operating_point(seed, embed_scale, "rf", obs, mu)
+                print(a9_trajectory_row(f"seed{seed}", dict(init, step="init")))
             for i, row in enumerate(stats["trajectory"]):
                 first = i == 0 and not (label.startswith("resonate")
                                         and embed_scale is not None)
