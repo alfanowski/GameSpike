@@ -20,6 +20,7 @@ report that prints only the verdict.
 """
 import math
 
+import numpy as np
 import pytest
 import torch
 
@@ -42,13 +43,30 @@ from analysis.rf_pilot import (
     GB_NOT_PROMISING_AT_OR_BELOW,
     GB_PROMISING_AT_OR_ABOVE,
     GB_THRESHOLD_AGREEMENT_TOL,
+    PERIOD_BAND_EDGES,
+    PERIOD_BAND_LABELS,
+    RF_PERIOD_BIN_EDGES,
+    WELCH_SEGMENT_LEN,
+    ac_gain,
+    band_bin_counts,
+    band_power_density,
+    band_power_fraction_in,
+    band_power_fractions,
+    bin_periods,
+    dc_gain_at_period,
+    dc_power_fraction,
     decision_rule,
     ga2_verdict,
     ga_verdict,
     gb_threshold_agrees,
     gb_threshold_from_data,
     gb_verdict,
+    mean_dc_gain_log_uniform,
+    period_bin_index,
+    resonant_u_response_var,
     select_embed_scale,
+    unresolved_slow_fraction,
+    welch_psd,
 )
 
 BETA = 0.9  # §23.2: the resonate-and-fire path holds the LIF path's own beta
@@ -494,6 +512,352 @@ class TestSelectEmbedScale:
         rates = [(9.0, 0.02)]
         _selected, criterion = select_embed_scale(rates, 0.010)
         assert criterion == pytest.approx(math.log(2.0))
+
+
+# --------------------------------------------------------------------------- #
+# --stage spectrum -- the spectral estimator and the band arithmetic.
+#
+# Same scope rule as the rest of this file: synthetic signals and closed forms
+# only, no fixture, no checkpoint, no production-geometry reservoir. A hand-rolled
+# Welch has exactly two places it goes quietly wrong -- the window normalisation
+# and the one-sided doubling -- and both produce a spectrum that LOOKS right and
+# integrates to the wrong number, so the tests below check it against signals
+# whose answer is known in closed form rather than against its own plausibility.
+# --------------------------------------------------------------------------- #
+
+SINE_BIN = 48                  # 512/48 = 10.667 steps, mid-band in `8 <= T < 16`
+BAND_8_16 = PERIOD_BAND_LABELS.index("8-16")
+
+
+def _sinusoid(n_steps=6000, bin_index=SINE_BIN, segment_len=WELCH_SEGMENT_LEN):
+    """A sinusoid landing exactly on a Welch bin CENTRE, well inside its band.
+
+    Both properties are deliberate. On a bin centre the periodic Hann leaks into
+    the two neighbours and nowhere else; a frequency between bins would smear
+    across the whole spectrum and the test would be measuring leakage rather than
+    the estimator. Mid-band, because bin 48's neighbours (T = 10.9 and 10.4) are
+    still inside `8 <= T < 16` -- a sinusoid parked ON a band edge would put its
+    leakage in the next band over and the test would have to tolerate it.
+    """
+    t = np.arange(n_steps, dtype=np.float64)
+    return np.sin(2.0 * np.pi * bin_index * t / segment_len)
+
+
+class TestWelchOnSignalsWithAKnownAnswer:
+    def test_a_pure_sinusoid_puts_essentially_all_power_in_its_own_band(self):
+        freqs, psd, _n = welch_psd(_sinusoid())
+        fractions = band_power_fractions(freqs, psd[:, 0])
+        assert fractions[BAND_8_16] > 0.999
+        for band, fraction in enumerate(fractions):
+            if band != BAND_8_16:
+                assert fraction < 0.001
+
+    def test_the_sinusoid_also_reads_through_the_closed_interval_helper(self):
+        # `band_power_fraction_in` is the arbitrary-band version §4's tradeoff
+        # table uses, and it has to agree with the fixed-band decomposition on a
+        # signal where both are unambiguous.
+        freqs, psd, _n = welch_psd(_sinusoid())
+        assert band_power_fraction_in(freqs, psd[:, 0], 8.0, 16.0) > 0.999
+        assert band_power_fraction_in(freqs, psd[:, 0], 2.0, 8.0) < 0.001
+
+    def test_a_sinusoid_integrates_back_to_its_own_variance(self):
+        # Parseval, which is what pins the window normalisation AND the one-sided
+        # doubling at once: a unit sinusoid has variance exactly 0.5, and an
+        # estimator that forgot either factor would still produce a spectrum with
+        # a clean peak in the right place.
+        freqs, psd, _n = welch_psd(_sinusoid())
+        df = float(freqs[1] - freqs[0])
+        assert float(psd.sum() * df) == pytest.approx(0.5, rel=1e-3)
+
+    def test_white_noise_integrates_back_to_its_own_variance(self):
+        noise = np.random.default_rng(0).standard_normal(32768)
+        freqs, psd, _n = welch_psd(noise)
+        df = float(freqs[1] - freqs[0])
+        assert float(psd.sum() * df) == pytest.approx(float(noise.var()), rel=0.02)
+
+    def test_white_noise_spreads_power_evenly_across_the_spectrum(self):
+        """"Evenly" means FLAT IN FREQUENCY, which is flat DENSITY and NOT equal
+        band fractions -- the bands are octaves in period and the bins are uniform
+        in frequency, so `T<4` holds 128 bins where `32-64` holds 8. Writing this
+        test against equal fractions would fail on a genuinely white signal, and
+        that trap is precisely why the report carries a density row at all."""
+        noise = np.random.default_rng(0).standard_normal(32768)
+        freqs, psd, _n = welch_psd(noise)
+        fractions = band_power_fractions(freqs, psd[:, 0])
+        counts = band_bin_counts(freqs)
+        density = band_power_density(fractions, counts)
+        assert np.allclose(density, 1.0, rtol=0.2)
+        # And the fractions themselves track the bin counts, which is the same
+        # statement read the other way round.
+        assert np.allclose(fractions, counts / counts.sum(), rtol=0.2)
+
+    def test_the_segment_mean_bin_is_reported_and_not_folded_into_a_band(self):
+        # A pure ramp is almost entirely slower than one segment. Its resolved
+        # fractions still sum to 1 -- they are fractions OF the resolved power --
+        # and the unresolved share has to be large, or bin 0 is being smuggled
+        # into the slowest band where it would be indistinguishable from measured
+        # low-frequency power.
+        ramp = np.linspace(-1.0, 1.0, 6000)
+        freqs, psd, _n = welch_psd(ramp - ramp.mean())
+        assert unresolved_slow_fraction(psd[:, 0]) > 0.5
+        assert float(band_power_fractions(freqs, psd[:, 0]).sum()) == pytest.approx(1.0)
+
+    def test_a_record_shorter_than_one_segment_raises(self):
+        with pytest.raises(ValueError):
+            welch_psd(np.zeros(WELCH_SEGMENT_LEN - 1))
+
+    def test_channels_are_independent(self):
+        # (T, D) must be D separate spectra, not one spectrum of the sum: the
+        # observation table prints one row per slot and pools by SUMMING the
+        # per-channel spectra afterwards.
+        # Bin 24 is 512/24 = 21.33 steps, mid-band in `16 <= T < 32` -- chosen the
+        # same way SINE_BIN was, so its leakage neighbours stay in its own band.
+        stacked = np.stack([_sinusoid(), _sinusoid(bin_index=24)], axis=1)
+        freqs, psd, _n = welch_psd(stacked)
+        assert psd.shape[1] == 2
+        assert band_power_fractions(freqs, psd[:, 0])[BAND_8_16] > 0.999
+        assert band_power_fractions(freqs, psd[:, 1])[
+            PERIOD_BAND_LABELS.index("16-32")] > 0.999
+
+
+class TestBandPowerFractionsAreADecomposition:
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_the_fractions_sum_to_one(self, seed):
+        # The property that makes them readable as a decomposition at all.
+        # PERIOD_BAND_EDGES spans [0, inf), so no resolved bin can fall outside
+        # it and nothing may be silently dropped.
+        signal = np.random.default_rng(seed).standard_normal((6000, 3))
+        freqs, psd, _n = welch_psd(signal - signal.mean(axis=0))
+        for channel in range(psd.shape[1]):
+            assert float(band_power_fractions(freqs, psd[:, channel]).sum()) \
+                == pytest.approx(1.0)
+        assert float(band_power_fractions(freqs, psd.sum(axis=1)).sum()) \
+            == pytest.approx(1.0)
+
+    def test_every_resolved_bin_is_counted_exactly_once(self):
+        freqs, _psd, _n = welch_psd(np.zeros(6000))
+        assert int(band_bin_counts(freqs).sum()) == len(freqs) - 1
+
+    def test_a_channel_with_no_power_reads_nan_rather_than_zero(self):
+        # A dimension that is identically zero has NO spectrum; reporting 0.0 for
+        # every band would put it in the table as a measurement.
+        freqs, psd, _n = welch_psd(np.zeros(6000))
+        assert bool(np.isnan(band_power_fractions(freqs, psd[:, 0])).all())
+        assert math.isnan(band_power_fraction_in(freqs, psd[:, 0], 2.0, 32.0))
+
+    def test_band_power_fraction_in_is_closed_at_both_ends(self):
+        # §4's rows are candidate SUPPORTS written `T in [T_min, T_max]` with both
+        # endpoints meant, so a bin sitting exactly on an endpoint is inside. Two
+        # rows sharing an endpoint therefore share that bin, which is why the
+        # column does not sum to 1 and why the report says so.
+        freqs, psd, _n = welch_psd(_sinusoid())
+        exact_period = WELCH_SEGMENT_LEN / SINE_BIN
+        assert band_power_fraction_in(freqs, psd[:, 0], exact_period, 64.0) > 0.3
+        assert band_power_fraction_in(freqs, psd[:, 0], 2.0, exact_period) > 0.3
+
+    def test_the_widest_band_holds_everything(self):
+        freqs, psd, _n = welch_psd(
+            np.random.default_rng(3).standard_normal(6000))
+        assert band_power_fraction_in(freqs, psd[:, 0], 2.0, float(WELCH_SEGMENT_LEN)) \
+            == pytest.approx(1.0)
+
+
+class TestPeriodBucketing:
+    """§3 buckets 8,192 frozen `T_i` into octaves and the counts have to sum back
+    to the reservoir size, so what happens exactly ON an edge is load-bearing
+    rather than a detail: half-open at the bottom, and the LAST bin closed at the
+    top because §23.2's support ends at T = 32 and a draw landing there is real."""
+
+    @pytest.mark.parametrize("period,expected", [
+        (2.0, 0),           # the support's lower endpoint, inside the first bin
+        (2.0001, 0),
+        (3.9999, 0),
+        (4.0, 1),           # ON an internal edge -> the SLOWER bin
+        (7.9999, 1),
+        (8.0, 2),
+        (15.9999, 2),
+        (16.0, 3),
+        (31.9999, 3),
+        (32.0, 3),          # the support's upper endpoint -> the LAST bin
+    ])
+    def test_octave_bins_including_every_boundary(self, period, expected):
+        assert period_bin_index(period, RF_PERIOD_BIN_EDGES) == expected
+
+    @pytest.mark.parametrize("period", [1.9999, 32.0001, 0.5, 1000.0])
+    def test_outside_the_support_is_none_not_a_clamped_bin(self, period):
+        # None rather than the nearest bin: a period outside §23.2's support means
+        # the draw is not what was pre-registered, and quietly filing it in the
+        # end bin would hide that in a table whose counts still added up.
+        assert period_bin_index(period, RF_PERIOD_BIN_EDGES) is None
+
+    @pytest.mark.parametrize("period,expected", [
+        (0.5, 0), (3.9999, 0), (4.0, 1), (8.0, 2), (16.0, 3), (32.0, 4),
+        (64.0, 5), (10_000.0, 5), (math.inf, 5),
+    ])
+    def test_the_report_bands_cover_everything_including_infinity(self, period, expected):
+        # PERIOD_BAND_EDGES ends at inf so the DC bin's period has somewhere to
+        # go; `band_power_fractions` drops that bin, but the bucketing must not
+        # be the thing that decides so.
+        assert period_bin_index(period, PERIOD_BAND_EDGES) == expected
+
+    def test_bin_periods_maps_the_dc_bin_to_infinity(self):
+        freqs, _psd, _n = welch_psd(np.zeros(6000))
+        periods = bin_periods(freqs)
+        assert math.isinf(periods[0])
+        assert periods[1] == pytest.approx(float(WELCH_SEGMENT_LEN))
+        assert periods[-1] == pytest.approx(2.0)     # Nyquist
+
+
+class TestDcPowerFraction:
+    def test_a_hand_computed_value(self):
+        # x = [1, 3]: mean 2 so mean^2 = 4; mean(x^2) = (1 + 9)/2 = 5; 4/5 = 0.8.
+        per_channel, pooled = dc_power_fraction(np.array([[1.0], [3.0]]))
+        assert per_channel[0] == pytest.approx(0.8)
+        assert pooled == pytest.approx(0.8)
+
+    def test_a_hand_computed_value_pooled_over_two_channels(self):
+        # Channel A as above (mean^2 = 4, mean square = 5). Channel B = [1, -1]:
+        # mean 0, mean square 1. Pooled = (4 + 0)/(5 + 1) = 2/3, and NOT the mean
+        # of the two per-channel shares (0.8 and 0.0), which would be 0.4 --
+        # RESULTS.md §7.1's figure is ||E x||^2 / E||x||^2, an energy ratio.
+        per_channel, pooled = dc_power_fraction(np.array([[1.0, 1.0], [3.0, -1.0]]))
+        assert per_channel[0] == pytest.approx(0.8)
+        assert per_channel[1] == pytest.approx(0.0)
+        assert pooled == pytest.approx(2.0 / 3.0)
+
+    def test_a_constant_channel_is_all_dc(self):
+        per_channel, pooled = dc_power_fraction(np.full((16, 1), 2.5))
+        assert per_channel[0] == pytest.approx(1.0)
+        assert pooled == pytest.approx(1.0)
+
+    def test_an_identically_zero_channel_is_nan_not_zero_and_not_one(self):
+        # The three reserved observation slots (RESULTS.md v1 §9). 0/0 is not 0
+        # ("no DC") and not 1 ("all DC"); it is a channel with no power, and the
+        # report has to say so rather than average a fabricated number in.
+        per_channel, pooled = dc_power_fraction(np.array([[1.0, 0.0], [3.0, 0.0]]))
+        assert math.isnan(per_channel[1])
+        # A zero channel contributes nothing to EITHER side of the pooled ratio,
+        # so pooling over 1 or over 2 channels is the same number.
+        assert pooled == pytest.approx(0.8)
+
+    def test_the_chunked_accumulation_matches_the_one_shot_one(self):
+        # The chunking exists so a 6,000 x 8,192 float32 input current never gets
+        # a float64 copy; it must not change the answer.
+        x = np.random.default_rng(7).standard_normal((1000, 4)) + 0.3
+        one_shot = dc_power_fraction(x, chunk=10_000)
+        chunked = dc_power_fraction(x, chunk=37)
+        assert np.allclose(one_shot[0], chunked[0])
+        assert one_shot[1] == pytest.approx(chunked[1])
+
+    def test_it_accepts_a_one_dimensional_signal(self):
+        per_channel, pooled = dc_power_fraction(np.array([1.0, 3.0]))
+        assert per_channel[0] == pytest.approx(0.8)
+        assert pooled == pytest.approx(0.8)
+
+
+class TestAnalyticGainOverABand:
+    """§23.3's construction number, as a function of the band rather than as the
+    single row §23.3 tabulates. §4's tradeoff table is entirely this function."""
+
+    def test_a_degenerate_band_at_omega_zero_is_exactly_the_lif_gain(self):
+        # omega = 0 is T = inf, and the answer is §23.3's 10.0 -- reported as
+        # 10.0000 and equal to it to within a rounding of the fourth decimal.
+        #
+        # IT IS PINNED AS `1.0/(1.0 - BETA)` AND NOT AS THE LITERAL 10.0, and the
+        # difference is real rather than pedantic: in float64, `1 - 0.9` is
+        # 0.09999999999999998 and its reciprocal is 10.000000000000002, so the
+        # LIF gain in this codebase's own arithmetic is NOT the literal 10.0.
+        # `analysis/reservoir_health.dc_offset_factor` uses that same expression,
+        # and its tests pin it the same way (`test_none_omega_returns_the_scalar_lif_factor`).
+        # Asserting the literal here would make this function the one place that
+        # disagrees with the module it has to line up with, and would force
+        # `dc_gain_at_period` to special-case beta = 0.9 to pass.
+        assert mean_dc_gain_log_uniform(math.inf, math.inf, 0.9) == 1.0 / (1.0 - 0.9)
+        assert dc_gain_at_period(math.inf, 0.9) == 1.0 / (1.0 - 0.9)
+        assert mean_dc_gain_log_uniform(math.inf, math.inf, 0.9) == pytest.approx(10.0)
+        assert f"{dc_gain_at_period(math.inf, 0.9):.4f}" == "10.0000"
+
+    @pytest.mark.parametrize("beta", [0.5, 0.8, 0.9, 0.95])
+    def test_the_degenerate_lif_case_holds_at_other_betas(self, beta):
+        assert mean_dc_gain_log_uniform(math.inf, math.inf, beta) == 1.0 / (1.0 - beta)
+
+    def test_a_degenerate_band_anywhere_is_the_pointwise_gain(self):
+        for period in (2.0, 4.0, 8.0, 16.0, 32.0):
+            assert mean_dc_gain_log_uniform(period, period, 0.9) \
+                == pytest.approx(dc_gain_at_period(period, 0.9), abs=1e-12)
+
+    def test_the_preregistered_octaves_match_section_23_3s_table(self):
+        # §23.3: "T=2 -> 0.5263, T=4 -> 0.7433, T=8 -> 1.3644, T=16 -> 2.6081,
+        # T=32 -> 4.7359."
+        for period, quoted in ((2, 0.5263), (4, 0.7433), (8, 1.3644),
+                               (16, 2.6081), (32, 4.7359)):
+            assert dc_gain_at_period(period, 0.9) == pytest.approx(quoted, abs=1e-4)
+
+    def test_the_preregistered_band_reproduces_section_23_3s_headline(self):
+        # §23.3's own analytic figures for T ~ logU[2, 32]: mean DC gain 1.7846,
+        # DC/AC 0.7779. If this function did not reproduce them, §4's table would
+        # be a different quantity wearing §23.3's name.
+        gain = mean_dc_gain_log_uniform(2.0, 32.0, 0.9)
+        assert gain == pytest.approx(1.7846, abs=1e-3)
+        assert gain / ac_gain(0.9) == pytest.approx(0.7779, abs=1e-3)
+
+    def test_the_ac_gain_is_the_preregistered_constant(self):
+        assert ac_gain(0.9) == pytest.approx(2.2942, abs=1e-4)
+
+    def test_the_gain_increases_with_the_slowest_period_in_the_band(self):
+        # The whole content of §4's tradeoff: admitting slower units raises the DC
+        # gain the construction exists to suppress.
+        gains = [mean_dc_gain_log_uniform(2.0, t, 0.9) for t in (8, 16, 32, 64, 128)]
+        assert gains == sorted(gains)
+        assert all(g < 10.0 for g in gains)
+
+    def test_quadrature_is_converged_at_the_default_sample_count(self):
+        coarse = mean_dc_gain_log_uniform(2.0, 128.0, 0.9, n_samples=2000)
+        fine = mean_dc_gain_log_uniform(2.0, 128.0, 0.9, n_samples=200_000)
+        assert coarse == pytest.approx(fine, abs=1e-6)
+
+    def test_an_unbounded_band_raises_rather_than_returning_the_limit(self):
+        # log-uniform on [2, inf) is not a distribution. Returning 1/(1-beta)
+        # would report a mean over a band nobody could draw from.
+        with pytest.raises(ValueError):
+            mean_dc_gain_log_uniform(2.0, math.inf, 0.9)
+
+    @pytest.mark.parametrize("bad", [(0.0, 32.0), (-2.0, 32.0), (32.0, 2.0)])
+    def test_a_malformed_band_raises(self, bad):
+        with pytest.raises(ValueError):
+            mean_dc_gain_log_uniform(bad[0], bad[1], 0.9)
+
+
+class TestResonantResponse:
+    """§3b's linearised prediction. Checked against the one case with a closed
+    form: at omega = 0 the resonate-and-fire unit IS the LIF membrane (§23.2), and
+    a LIF membrane driven by white noise of variance s^2 has variance
+    s^2/(1-beta^2) -- i.e. exactly `ac_gain(beta)^2`, the constant §23.3 states
+    the AC accumulation gain in."""
+
+    def test_a_zero_frequency_unit_reproduces_the_lif_accumulation_gain(self):
+        noise = np.random.default_rng(11).standard_normal((32768, 1))
+        freqs, psd, _n = welch_psd(noise - noise.mean(axis=0))
+        variance = resonant_u_response_var(freqs, psd, np.zeros(1), BETA)
+        assert float(variance[0]) == pytest.approx(
+            float(noise.var()) * ac_gain(BETA) ** 2, rel=0.05)
+
+    def test_a_resonant_unit_amplifies_its_own_frequency_most(self):
+        # A sinusoid at one period, read by a bank tuned across periods: the unit
+        # tuned to that period must respond most. This is the property the whole
+        # construction rests on and it is worth one test.
+        signal = _sinusoid()[:, None]
+        freqs, psd, _n = welch_psd(signal)
+        periods = np.array([2.5, 5.0, WELCH_SEGMENT_LEN / SINE_BIN, 24.0])
+        psd_per_unit = np.repeat(psd, len(periods), axis=1)
+        variance = resonant_u_response_var(freqs, psd_per_unit,
+                                           2.0 * np.pi / periods, BETA)
+        assert int(np.argmax(variance)) == 2
+
+    def test_a_mismatched_psd_shape_raises(self):
+        freqs, psd, _n = welch_psd(np.zeros((6000, 2)))
+        with pytest.raises(ValueError):
+            resonant_u_response_var(freqs, psd, np.zeros(3), BETA)
 
 
 # --------------------------------------------------------------------------- #
