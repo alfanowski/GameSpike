@@ -101,6 +101,17 @@ bug, an unsolved research problem, a missing architectural layer) — not becaus
 smaller scope was more convenient. Each phase's own document should restate this roadmap
 so it's never implicit.
 
+> **Note added 2026-08-21.** Roadmap Phase 2 now has its own design document —
+> [`docs/DESIGN_ROADMAP_PHASE2.md`](DESIGN_ROADMAP_PHASE2.md) — proposing it on the trained
+> GRU architecture rather than the frozen reservoir, since `RESULTS.md` §22 records that
+> Phase 1's result "is not evidence about the multi-game goal" and the reservoir was Phase
+> 1's experimental question rather than a premise of this roadmap. **That document is a
+> proposal under review: nothing in it is implemented and no run has been started.** It
+> restates this roadmap as the paragraph above asks, and it flags one external blocker this
+> section could not have known: only one Game Boy ROM exists on the development machine, so
+> the cross-*title* experiment waits on a second cartridge while a cross-*level* precursor
+> does not. Nothing in §1.1 is edited, per this document's append-only practice.
+
 ## 2. Target hardware and constraints
 
 - Development and default training machine: same MacBook Air M4 as the LM project
