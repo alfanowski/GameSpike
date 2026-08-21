@@ -1,0 +1,87 @@
+--- regime=continuous  metric=mean_extrinsic_return ---
+  reservoir  n=10  seeds=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  mean=  34.0465  std=   2.6659  sem=   0.8430  min=  28.5125  max=  37.8438
+  baseline   n=10  seeds=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  mean=  41.4210  std=   5.8346  sem=   1.8451  min=  33.4167  max=  51.8750
+  convention: every signed statistic below is (arm_a=reservoir) minus (arm_b=baseline); positive means reservoir scored higher on 'mean_extrinsic_return'
+  Welch t-test:         t=-3.6354  df=12.6008  p=0.003168
+  Permutation test:     observed_diff=-7.3746  p=0.001061  (method=exact, n_permutations=184756)
+  Mann-Whitney U:       U=11.0000  p=0.002089  (method=exact)
+  Cohen's d (pooled SD): -1.6258
+  Bootstrap 95% CI on diff of means: [-11.2784, -3.6950]  (observed_diff=-7.3746, n_resamples=20000, seed=0)
+  NOTE: n above counts independently-trained CHECKPOINTS (training seeds), never episodes --
+        pooling raw episodes across seeds would treat one checkpoint's sampling noise as
+        independent evidence about the architecture. See aggregate_by_arm's docstring.
+
+--- regime=reset128  metric=mean_extrinsic_return ---
+  reservoir  n=10  seeds=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  mean=  33.9450  std=   3.5979  sem=   1.1378  min=  28.2792  max=  40.2125
+  baseline   n=10  seeds=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  mean=  41.2004  std=   6.1027  sem=   1.9298  min=  33.6187  max=  53.3750
+  convention: every signed statistic below is (arm_a=reservoir) minus (arm_b=baseline); positive means reservoir scored higher on 'mean_extrinsic_return'
+  Welch t-test:         t=-3.2386  df=14.5821  p=0.005683
+  Permutation test:     observed_diff=-7.2554  p=0.003497  (method=exact, n_permutations=184756)
+  Mann-Whitney U:       U=12.0000  p=0.002879  (method=exact)
+  Cohen's d (pooled SD): -1.4484
+  Bootstrap 95% CI on diff of means: [-11.5210, -3.1817]  (observed_diff=-7.2554, n_resamples=20000, seed=0)
+  NOTE: n above counts independently-trained CHECKPOINTS (training seeds), never episodes --
+        pooling raw episodes across seeds would treat one checkpoint's sampling noise as
+        independent evidence about the architecture. See aggregate_by_arm's docstring.
+
+--- training log summary ---
+  baseline_seed0: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0906  last 10%=0.1194
+      grad_norm  min=0.0598  median=31.9108  max=1887.0857
+  baseline_seed1: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0867  last 10%=0.1237
+      grad_norm  min=0.1051  median=33.4142  max=5564.4707
+  baseline_seed2: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0733  last 10%=0.1136
+      grad_norm  min=0.0583  median=31.0375  max=4586.2603
+  baseline_seed3: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0903  last 10%=0.1218
+      grad_norm  min=0.0577  median=32.4450  max=2414.4910
+  baseline_seed4: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0895  last 10%=0.1185
+      grad_norm  min=0.0772  median=32.0706  max=2463.5852
+  baseline_seed5: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0787  last 10%=0.1283
+      grad_norm  min=0.0677  median=29.0219  max=1662.3306
+  baseline_seed6: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0895  last 10%=0.1247
+      grad_norm  min=0.0823  median=38.7129  max=25677.3516
+  baseline_seed7: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0884  last 10%=0.1251
+      grad_norm  min=0.0692  median=28.6569  max=1382.1106
+  baseline_seed8: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0794  last 10%=0.1188
+      grad_norm  min=0.0526  median=30.4473  max=14351.5225
+  baseline_seed9: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0966  last 10%=0.1242
+      grad_norm  min=0.0522  median=34.6127  max=10402.0557
+  reservoir_seed0: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0335  last 10%=0.0910
+      grad_norm  min=7.4071  median=1065905536.0000  max=298002939904.0000
+  reservoir_seed1: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0419  last 10%=0.1012
+      grad_norm  min=45.7441  median=723082688.0000  max=243375800320.0000
+  reservoir_seed2: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0264  last 10%=0.0885
+      grad_norm  min=60.4697  median=2293374464.0000  max=1116332097536.0000
+  reservoir_seed3: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0396  last 10%=0.0888
+      grad_norm  min=41.8916  median=218567584.0000  max=115042713600.0000
+  reservoir_seed4: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0320  last 10%=0.1048
+      grad_norm  min=71.2878  median=4075400960.0000  max=815060418560.0000
+  reservoir_seed5: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0302  last 10%=0.0989
+      grad_norm  min=29.2761  median=7841986560.0000  max=6153052356608.0000
+  reservoir_seed6: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0472  last 10%=0.1071
+      grad_norm  min=17.3265  median=475782048.0000  max=76295282688.0000
+  reservoir_seed7: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0437  last 10%=0.0937
+      grad_norm  min=155.3007  median=148408848.0000  max=56924008448.0000
+  reservoir_seed8: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0352  last 10%=0.1086
+      grad_norm  min=12.2944  median=597795520.0000  max=445053927424.0000
+  reservoir_seed9: updates=7813 (skipped 0 unparseable line(s))  final_step=1000064
+      mean_extrinsic_reward  first 10%=0.0496  last 10%=0.0996
+      grad_norm  min=53.5935  median=228381184.0000  max=59008569344.0000

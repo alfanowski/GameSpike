@@ -55,14 +55,37 @@ V2FLAGS=(--grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
-# Count final checkpoints for one arm. Literal path + -path pattern, no shell glob.
+# Count final checkpoints for one arm by EXACT ENUMERATION of the ten expected paths.
+#
+# This deliberately does NOT pattern-match. The earlier version used
+# `find ... -path "*/${arm}_seed*"`, which is not anchored: a tagged run directory
+# such as `reservoir_seed0_clipemb/` -- exactly what `--run-tag` exists to create,
+# and what §14.11's manual-recovery fallback would produce -- also matches it. One
+# stray directory could therefore stand in for one genuinely missing seed and make
+# this report a full count, which is the precise false pass the guard exists to
+# prevent. An audit demonstrated it: nine real seeds plus one stray counted 10.
+# Ten literal paths cannot be got subtly wrong the way a pattern can. See §19.4.
 count_final() {
-  find "$REPO/checkpoints_v2" -type f -name 'step_1000064.pt' -path "*/$1_seed*" 2>/dev/null | wc -l | tr -d ' '
+  local arm="$1" n=0 s
+  for s in 0 1 2 3 4 5 6 7 8 9; do
+    [ -f "$REPO/checkpoints_v2/${arm}_seed${s}/step_1000064.pt" ] && n=$((n+1))
+  done
+  echo "$n"
 }
 
-# Count evaluation result JSONs across all selection directories.
+# Same discipline for the 120 expected evaluation results.
 count_evals() {
-  find "$REPO/results_v2" -type f -name 'eval_*_seed*_*.json' 2>/dev/null | wc -l | tr -d ' '
+  local n=0 sel arm s regime
+  for sel in final best init; do
+    for arm in baseline reservoir; do
+      for s in 0 1 2 3 4 5 6 7 8 9; do
+        for regime in continuous reset128; do
+          [ -f "$REPO/results_v2/$sel/eval_${arm}_seed${s}_${regime}.json" ] && n=$((n+1))
+        done
+      done
+    done
+  done
+  echo "$n"
 }
 
 log "=== v2 pipeline start (pid $$) ==="
@@ -128,26 +151,24 @@ if [ "$ne" -ne 120 ]; then
 fi
 log "guard 3 PASS: 120/120 evaluations"
 
-# ---------------------------------------------------------------- stage 4: statistics
-log "stage 4: aggregation"
+# ------------------------------------------------------- stages 4 and 5: statistics + health
+# Delegated to run_v2_analysis.sh rather than duplicated here.
+#
+# The earlier inline version of stage 4 ran §14.11's documented command, which points
+# --results-dir at the PARENT of where the eval driver writes and therefore SILENTLY
+# COMPARES NOTHING: it finds zero eval files, skips both regimes, and prints a
+# healthy-looking training-log summary underneath, so the output reads as success with
+# no headline in it. (`--selection best` does not fix this either -- that flag only
+# affects `--manifest`.) The correct recipe needs one aggregator run per selection
+# directory. See §19.1. run_v2_analysis.sh does that, additionally verifies that all
+# twenty final checkpoints LOAD rather than merely exist, and aborts on any non-zero
+# exit -- which the inline version also failed to check, so it could log COMPLETE with
+# a crashed aggregation behind it.
+log "stages 4-5: delegating to run_v2_analysis.sh"
 cd "$REPO" || exit 1
-"$PY" -m analysis.aggregate_results \
-  --results-dir results_v2 --checkpoint-dir checkpoints_v2 \
-  > "$REPO/results_v2_report.txt" 2>> "$LOG"
-"$PY" -m analysis.aggregate_results \
-  --results-dir results_v2 --checkpoint-dir checkpoints_v2 --json \
-  > "$REPO/results_v2_report.json" 2>> "$LOG"
-"$PY" -m analysis.aggregate_results \
-  --results-dir results_v2 --checkpoint-dir checkpoints_v2 --selection best \
-  > "$REPO/results_v2_report_best.txt" 2>> "$LOG"
-log "stage 4: aggregation written"
-
-# ---------------------------------------------------------------- stage 5: A7 / A9
-# Pre-registered at §14.5 (A7) and §15.6 (A9). Read-only, writes nothing itself.
-log "stage 5: A7/A9 reservoir health"
-"$PY" -m analysis.reservoir_health \
-  --checkpoint-dir checkpoints_v2 --arm reservoir --seeds 0-9 \
-  > "$REPO/results_v2_health.txt" 2>> "$LOG"
-log "stage 5: health written"
+if ! bash "$REPO/scripts/run_v2_analysis.sh" >> "$LOG" 2>&1; then
+  log "ABORT: run_v2_analysis.sh failed. Statistics are NOT valid."
+  exit 1
+fi
 
 log "=== v2 pipeline COMPLETE ==="

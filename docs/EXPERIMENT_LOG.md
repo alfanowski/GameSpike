@@ -2724,3 +2724,81 @@ appended after it. **This is the same family as §17.4's `pgrep -f` watcher matc
 own command line: a watcher that inspects shared mutable state must scope itself to
 events after its own start, or it will observe its own history and mistake it for the
 present.**
+
+## 21. v2 matrix COMPLETE — results, and the close-out of every pending item
+
+The full v2 pipeline finished at **04:22 on 2026-08-21**, unattended and without further
+incident. `docs/RESULTS.md` §13–§23 is the write-up; this section records what the ledger
+owes and not the analysis.
+
+### 21.1 Timeline, as it actually ran
+
+| stage | started | finished | outcome |
+|---|---|---|---|
+| reservoir arm (restarted, §18) | 23:55:09 | 03:12:01 | 10/10, launcher rc=0, **guard 1 PASS** |
+| baseline arm | 03:12:01 | 03:57:32 | 10/10, launcher rc=0, **guard 2 PASS** (20/20) |
+| evaluation matrix (120) | 03:57:32 | 04:18:32 | 120/120, rc=0, **guard 3 PASS** |
+| aggregation + A7/A9 | 04:18:32 | 04:22:01 | complete |
+
+Every guard passed on real completeness, and **guard 1 and guard 2 were each independently
+cross-checked by hand** (§20.8) rather than trusted, as §20.6 committed to. No stray
+directory ever appeared; the false-pass precondition never arose.
+
+### 21.2 The verdict, in one line
+
+**The reservoir still loses**, in all four trained conditions, by 7.26–8.97 points of mean
+episode return (exact permutation p 0.000141–0.003497, Cohen's *d* −1.45 to −2.22). Both
+pre-registered construction hypotheses **CONFIRMED**: A7 dead-gradient fraction
+**0.1636%** against a <2% band (v1: 9.8010%), A9 final silent fraction **32.1606%**
+against a <40% band (v1: 46.5222%), both measured by `analysis/reservoir_health.py` on
+both versions so the comparison uses one instrument (§17.11's requirement).
+
+**The single most informative contrast:** the corrections closed the *training*-reward gap
+from **5.82× to 1.38×** and did not close the *evaluation* gap at all. And v1 §5's
+caveat — that the episode-return scoreboard flattered the reservoir ~6× — **does not carry
+over**: v2's two arms have statistically indistinguishable episode lengths (353.1 vs
+336.9, p = 0.0725), so the return and per-step normalisations now agree (1.26× and 1.32×).
+§17.9's instruction to recompute that decomposition rather than assume it earned its keep.
+
+### 21.3 Pending items from §19 and §20, now closed
+
+- **§19.4 / §20.2 item 4 — the unanchored guard pattern is FIXED.**
+  `scripts/run_v2_pipeline.sh`'s `count_final`/`count_evals` now enumerate the ten (and
+  120) exact expected paths instead of pattern-matching. Verified against the real
+  completed matrix (10/10/120) **and** against the false-pass scenario itself: nine real
+  seeds plus a stray `reservoir_seed0_clipemb/` with seed 0 missing counts **10** under
+  the old pattern and **9** under the new enumeration, which correctly refuses.
+- **§19.1 — stages 4/5 no longer run the broken command.** They delegate to
+  `scripts/run_v2_analysis.sh`, which aggregates per selection directory, verifies all
+  twenty final checkpoints **load** rather than merely exist, and aborts on any non-zero
+  exit. The inline version checked no exit codes at all and could have logged `COMPLETE`
+  behind a crashed aggregation. Its two misleading empty-comparison outputs
+  (`results_v2_report.{txt,json}`, 2 `skipped (compare_arms...)` lines and no headline)
+  were deleted rather than committed.
+- **Test suite: 339 passed, 0 failed, 0 skipped**, with `MARIO_LAND_ROM_PATH` set — so the
+  94 ROM-dependent tests genuinely ran (§14.10's trap).
+
+### 21.4 Measurements taken after the matrix, on a deliberately quiet machine
+
+- **Efficiency, both flag sets back to back** (`RESULTS.md` §20): v2 flags give
+  baseline 1303.4 / reservoir 439.4 env-steps/s (**2.966×**); the v1 flag set in the same
+  session gives 1310.8 / 440.2 (**2.978×**). **The corrections are throughput-neutral**,
+  and the gap against `RESULTS.md` v1 §8's published 2.474× is therefore a property of the
+  measurement conditions rather than of the flags. Recorded as such instead of quietly
+  replacing v1's table.
+- **A9 on v1 as well as v2**, so §17.11's rule — that a v1 silent fraction quoted beside a
+  v2 one must come from the same instrument — is honoured. Output preserved at
+  `results_v1_health.txt` and `results_v2_health.txt`.
+
+### 21.5 Known gaps deliberately left open, stated so they are not mistaken for oversights
+
+- **The in-situ silent fraction under a v2-trained policy was NOT measured** (§14.13). All
+  §19 figures use the v1-collected fixture, which is the right controlled comparison for
+  "did the centring survive training" and is *not* what a v2 policy experiences. Cheap to
+  take now that the matrix exists; not taken.
+- **The full-scale decomposition of the two fixes was NOT run** (§17.6), so no v2 result
+  is attributable to per-group clipping or centring alone.
+- **The reservoir's operating point still runs away** — spike rate 0.194 at the final
+  checkpoint against a documented ~2% healthy band. Neither shipped fix regulates it.
+  This is §15.5's successor problem, now measured over a full run rather than
+  extrapolated, and it is the most concrete open architectural question this project has.

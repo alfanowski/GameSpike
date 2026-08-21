@@ -22,9 +22,8 @@ scientifically before generalizing" discipline already used in the sibling
 redefinition of the goal down to one game. Full version:
 [`docs/DESIGN.md` §1.1](docs/DESIGN.md#11-roadmap-this-document-is-phase-1-of-a-stated-larger-goal--not-the-destination).
 
-- **Phase 1 (this repository; the as-specified comparison is complete, see
-  [`docs/RESULTS.md`](docs/RESULTS.md), and a corrected comparison is running).** Super
-  Mario Land, Game Boy: frozen
+- **Phase 1 (this repository; both the as-specified comparison and the corrected one are
+  complete — see [`docs/RESULTS.md`](docs/RESULTS.md)).** Super Mario Land, Game Boy: frozen
   reservoir vs. matched-parameter trained-GRU baseline, under a mandatory scientific
   control. Answers whether a frozen reservoir helps at all on real game control at a real
   matched parameter budget — without that answered honestly first, any later claim about
@@ -51,7 +50,7 @@ redefinition of the goal down to one game. Full version:
   RAM maps target, so its RAM addresses will need the same from-scratch empirical
   confirmation Super Mario Land's did.
 
-## Status: the as-specified Phase 1 comparison is complete (2026-08-20)
+## Status: both Phase 1 comparisons are complete (v1 2026-08-20, v2 2026-08-21)
 
 Stated as precisely as possible, in keeping with this project family's practice
 of reporting real status rather than aspirational status (see
@@ -76,20 +75,37 @@ declared scoreboard (`mean_extrinsic_return`), in every trained condition measur
 write-up, including the controls that make that interpretable, the confound that limits
 it, and the limitations: [`docs/RESULTS.md`](docs/RESULTS.md).
 
-**A corrected comparison is in progress.** A root-cause diagnostic found after the runs
-completed that a single global gradient clip, whose coefficient is set by a 416-parameter
-embedding whose gradient explodes over the 128-step replay chain, trained the reservoir
-arm's readout far more slowly than the baseline's. The as-specified comparison therefore
-cannot cleanly separate "the frozen reservoir is a weaker feature extractor" from "its
-readout was barely trained". Corrected runs (per-group clipping and a centred embedding
-initialisation, applied identically to both arms) are executing; `docs/RESULTS.md` is
-marked **v1** and the corrected comparison will be appended to it as v2. Neither the
-negative headline nor the confound cancels the other, and neither should be quoted
-without the other.
+**The corrected comparison (v2) has now also run, and the verdict is unchanged.** A
+root-cause diagnostic found after the v1 runs completed that a single global gradient
+clip, whose coefficient is set by a 416-parameter embedding whose gradient explodes over
+the 128-step replay chain, trained the reservoir arm's readout far more slowly than the
+baseline's — so the as-specified comparison could not cleanly separate "the frozen
+reservoir is a weaker feature extractor" from "its readout was barely trained". A second
+full matrix (2 arms × 10 seeds × 1,000,064 steps, 120 fresh evaluations) was run with
+per-group clipping and a centred embedding initialisation at `--embed-scale 3.0`, applied
+identically to both arms.
 
-- [`docs/RESULTS.md`](docs/RESULTS.md) — **v1 results write-up**: the headline, the
-  setup, the two controls, the return-vs-per-step decomposition, the gradient-clipping
-  confound, the reservoir-construction findings, and the limitations.
+**The frozen reservoir still loses, in all four trained conditions, by 7.26–8.97 points
+of mean episode return (exact permutation p between 0.000141 and 0.003497, Cohen's d
+between −1.45 and −2.22).** The corrections worked and were not enough: the reservoir
+arm's mean per-update extrinsic *training* reward rose 4.4× and the training-reward gap
+closed from 5.82× to 1.38×, while the evaluation gap did not close at all. Two
+pre-registered construction hypotheses were confirmed — the dead-gradient budget fell from
+9.80% to **0.16%** of readout columns, and the silent-unit fraction from 46.52% to
+**32.16%** — so the reservoir measured in v2 is a genuinely better-calibrated one than the
+reservoir measured in v1.
+
+v1's negative result is **not** withdrawn and is not superseded in substance: it is what
+the pre-registered protocol produced, and v2 is reported beneath it rather than in place
+of it. Full write-up, including the two limitations that matter most (two treatments
+changed at once, and a clipping group-count asymmetry that favours the baseline):
+[`docs/RESULTS.md`](docs/RESULTS.md).
+
+- [`docs/RESULTS.md`](docs/RESULTS.md) — **v1 and v2 results write-ups**: the headline,
+  the setup, the two controls, the return-vs-per-step decomposition, the gradient-clipping
+  confound, the reservoir-construction findings, and the limitations — then, appended
+  beneath and never edited into v1, the corrected v2 comparison with the A7/A9 verdicts
+  and a v1-vs-v2 side by side.
 - [`docs/EXPERIMENT_LOG.md`](docs/EXPERIMENT_LOG.md) — the operational ledger:
   pre-registered protocol and ablations, verified invariants, and the hazards already hit.
 - [`docs/DESIGN.md`](docs/DESIGN.md) — full design rationale: why a reactive
@@ -226,7 +242,7 @@ python -m pytest tests/ -q
             Against a Matched-Parameter Trained Baseline},
   year   = {2026},
   note   = {See docs/DESIGN.md for the full design rationale and
-            docs/RESULTS.md (v1) for the Phase 1 results.},
+            docs/RESULTS.md (v1 and v2) for the Phase 1 results.},
   howpublished = {\url{https://github.com/alfanowski/GameSpike}}
 }
 ```
