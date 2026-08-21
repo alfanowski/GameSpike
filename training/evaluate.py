@@ -108,7 +108,7 @@ import torch
 
 from envs.mario_land_env import MarioLandEnv, OBS_DIM
 from training.novelty_gate import NoveltyGate
-from training.train import build_model, load_checkpoint
+from training.train import build_model, load_checkpoint, neuron_config_from_checkpoint
 
 DEVICE = torch.device("cpu")
 
@@ -159,8 +159,12 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
     Episode i is driven by a private generator seeded `seed + i`, so the run is
     reproducible from `seed` alone while the episodes still differ from one
     another. Returns the keys documented in `_summarise` for `extrinsic_return`,
-    `combined_return` and `episode_length`, plus `arm`, `n_episodes`, `seed`,
-    `episode_seeds` and `state_reset_interval`.
+    `combined_return` and `episode_length`, plus `arm`, `neuron_model`,
+    `n_episodes`, `seed`, `episode_seeds` and `state_reset_interval`.
+
+    There is deliberately no `neuron_model` ARGUMENT: it is read out of the
+    checkpoint (see below), so a caller cannot ask for one model and score another,
+    and a results file states what actually produced its numbers.
 
     `state_reset_interval` (default None = never reset within an episode) re-inits
     the model's recurrent state every N env steps, mirroring what training does at
@@ -176,12 +180,27 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
         raise ValueError(
             f"state_reset_interval must be >= 1 or None, got {state_reset_interval}")
 
-    # seed=0 is build_model's own default and is irrelevant here: `load_checkpoint`
-    # overwrites every buffer, the reservoir's frozen W_in/TT cores included, with
-    # the ones the checkpoint was actually trained with (they are persistent
-    # buffers, so they are in the state dict). The construction seed only decides
-    # what gets thrown away.
-    model, optimizer = build_model(arm)
+    # THE NEURON MODEL IS READ BEFORE THE MODEL IS BUILT, and this ordering is
+    # required rather than tidy. Every other checkpoint label can be ignored here
+    # because `load_checkpoint` overwrites the corresponding tensors wholesale --
+    # that is exactly why `seed=0` below is irrelevant, since the reservoir's frozen
+    # W_in/TT cores are persistent buffers that come back off disk and the
+    # construction seed only decides what gets thrown away. The neuron model is the
+    # one label that does not work that way: a resonate-and-fire checkpoint holds
+    # five buffers (`reservoir.rf.{omega,cos_omega,sin_omega,beta,threshold}`) that
+    # a LIF model does not have at all, so `load_state_dict` cannot overwrite what
+    # was never constructed and refuses the file outright.
+    #
+    # `neuron_config_from_checkpoint` defaults every missing key to the historical
+    # lif/2.0/32.0, so the 400 checkpoints under `checkpoints/` and
+    # `checkpoints_v2/` -- which predate all three keys -- build exactly the model
+    # they always did and evaluate to the same numbers. That property is not
+    # optional: v1 and v2 were scored by a harness byte-identical to `64839a9`
+    # (docs/RESULTS.md §23), and every published comparison rests on it.
+    ckpt_labels = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    neuron_config = neuron_config_from_checkpoint(ckpt_labels)
+    del ckpt_labels  # the tensors are re-read by load_checkpoint; do not hold two copies
+    model, optimizer = build_model(arm, **neuron_config)
     load_checkpoint(model, optimizer, checkpoint_path, expected_arm=arm)
     model.eval()
     init_state_fn, step_fn = model._init_state_fn, model._step_fn
@@ -239,7 +258,12 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
     finally:
         env.close()
 
+    # `neuron_model` is reported, not accepted: it is read off the checkpoint, so a
+    # results file states which neuron model actually produced its numbers rather
+    # than which one the caller believed it was evaluating. Pre-flag checkpoints
+    # report "lif", which is what they are.
     results = {"arm": arm, "n_episodes": n_episodes, "seed": seed,
+               "neuron_model": neuron_config["neuron_model"],
                "episode_seeds": episode_seeds,
                "state_reset_interval": state_reset_interval}
     results.update(_summarise("extrinsic_return", extrinsic_returns))
@@ -251,7 +275,8 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
 def _format(results: dict) -> str:
     """Human-readable summary: every mean carries its spread, so nobody reads a
     single number off this output and calls it a comparison."""
-    lines = [f"arm={results['arm']}  episodes={results['n_episodes']}  "
+    lines = [f"arm={results['arm']}  neuron_model={results.get('neuron_model', 'lif')}  "
+             f"episodes={results['n_episodes']}  "
              f"seed={results['seed']} (per-episode seeds {results['episode_seeds']})"]
     for name, label in (("extrinsic_return", "extrinsic return (SCOREBOARD)"),
                         ("combined_return", "combined return (extrinsic+novelty)"),

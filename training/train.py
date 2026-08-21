@@ -131,6 +131,37 @@ leaves the bias trainable. Measured over 8 seeds: silent fraction 44.7403% ->
 Applied IDENTICALLY to both arms, for the same reason per-group clipping is; see
 models/embedding_init.py. Both settings are recorded in every checkpoint and every
 log line, and both default to the historical behaviour.
+
+THE NEURON MODEL IS THE THIRD SUCH KNOB (`--neuron-model`, default `lif` = the
+historical behaviour), and it is the one knob here that is NOT applied to both
+arms -- because it cannot be. A GRU has no spiking neuron model, so `--arm
+baseline --neuron-model rf` RAISES rather than being quietly ignored: silence
+would put a checkpoint and a `train_log.jsonl` labelled `neuron_model="rf"` on
+disk for a run that trained a GRU, and a mislabelled run gets tabulated rather
+than noticed.
+
+`rf` is docs/EXPERIMENT_LOG.md §23's resonate-and-fire pilot: one frozen complex
+pole per unit with |lambda| = beta = 0.9 held identical to LIF, so the memory
+horizon is unchanged by construction and only a rotation is added. Zero new
+trainable parameters (parameter parity stays 139,179 vs 132,715). The hypothesis
+it tests, H10, is about the operating point rather than about task reward: the
+measured defect is that the reservoir's spike rate runs away over a full run
+(0.0209 at step 100,096 -> 0.1615 at step 1,000,064) because the trained
+embedding's DC component grows 8.4x and nothing regulates it -- `centered` fixes
+the STARTING point of a quantity nothing holds. A resonate-and-fire unit's DC
+gain is a property of the frozen pole, not of a trainable bias, so it cannot
+decay the same way: mean DC gain 10.0 -> 1.7846 with the AC accumulation gain
+1/sqrt(1-beta^2) = 2.2942 exactly unchanged.
+
+Unlike the two knobs above, `rf` is NOT a candidate default. The LIF path must
+stay bit-identical to the code that produced `checkpoints_v2/`, because §23.9
+performs no new LIF or GRU runs and uses the published ones as the pilot's
+control; `tests/test_neuron_model_flag.py` reproduces a committed v2 training-log
+prefix float for float to prove it (G0e-i). All three of `neuron_model`,
+`rf_period_min` and `rf_period_max` are recorded in every checkpoint and every log
+line -- and in the checkpoint they are more than metadata, since an `rf` state
+dict holds buffers a LIF model does not, so a reader has to consult them BEFORE it
+constructs anything (`neuron_config_from_checkpoint`).
 """
 import argparse
 import json
@@ -143,6 +174,7 @@ from envs.mario_land_env import MarioLandEnv, OBS_DIM, OBS_MEAN
 from models.embedding_init import EMBED_INIT_MODES as _EMBED_INIT_MODES
 from models.policy_value_gru import PolicyValueGRU
 from models.policy_value_reservoir import PolicyValueReservoir
+from models.spiking_reservoir import NEURON_MODELS as _NEURON_MODELS
 from training.novelty_gate import NoveltyGate
 from training.rollout import collect_rollout_with_model
 from training.ppo import compute_gae, ppo_policy_loss, value_loss, entropy_bonus
@@ -176,6 +208,28 @@ GRAD_CLIP_MODES = ("global", "per-group")
 # Imported rather than re-declared: the CLI's choices and the models' validation
 # must be the same tuple, or a mode could be accepted here and rejected there.
 EMBED_INIT_MODES = _EMBED_INIT_MODES
+
+# `lif` -- snntorch's Leaky, the neuron every existing checkpoint was produced
+#          under. THE DEFAULT, and it stays the default: docs/EXPERIMENT_LOG.md
+#          §23.5's G0e-i makes the published v2 LIF runs the resonate-and-fire
+#          pilot's experimental control, which is only legitimate while this path
+#          is bit-identical to the one that produced them.
+# `rf`   -- resonate-and-fire (§23.2): one frozen complex pole per unit, |lambda|
+#          = beta = 0.9 held identical to LIF so the memory horizon is unchanged
+#          by construction, and only the rotation is added. Reservoir arm only.
+# Imported for the same reason EMBED_INIT_MODES is: one tuple, so a mode cannot be
+# accepted by the CLI and rejected by the model.
+NEURON_MODELS = _NEURON_MODELS
+
+# §23.2 fixes the resonant-period support BEFORE measurement and does not search
+# it: T_min = 2 is the Nyquist period of the discrete-time system (nothing faster
+# is representable), T_max = 32 is one quarter of the 128-step truncated-BPTT
+# window, so every unit completes at least four cycles inside the horizon the
+# readout ever receives a gradient over. They are defaults here AND in
+# `SpikingReservoir.__init__`'s signature; `tests/test_neuron_model_flag.py`
+# asserts the two agree via `inspect`, so the second copy cannot drift silently.
+RF_PERIOD_MIN_DEFAULT = 2.0
+RF_PERIOD_MAX_DEFAULT = 32.0
 
 DEVICE = torch.device("cpu")
 
@@ -289,7 +343,9 @@ def apply_grad_clipping(model, grad_clip_mode: str = "global"):
 
 
 def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
-                embed_scale: float = 1.0):
+                embed_scale: float = 1.0, neuron_model: str = "lif",
+                rf_period_min: float = RF_PERIOD_MIN_DEFAULT,
+                rf_period_max: float = RF_PERIOD_MAX_DEFAULT):
     """Construct one experimental arm's model plus its optimizer.
 
     Both arms are exposed through the same `(init_state_fn, step_fn)` pair so the
@@ -308,11 +364,32 @@ def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
     imported by the models, so the models stay game-agnostic (they take `obs_dim` as
     an argument) and the measured constant stays next to the observation
     construction it describes. Defaults reproduce the historical init exactly.
+
+    `neuron_model`/`rf_period_min`/`rf_period_max` are RESERVOIR-ARM ONLY, and the
+    baseline arm REFUSES anything but the default rather than ignoring it. A GRU
+    has no neuron model at all, so there is no behaviour a non-default value could
+    select; accepting it silently would let `save_checkpoint` stamp
+    `neuron_model="rf"` onto a checkpoint that trained an ordinary GRU, and a
+    mislabelled run is worse than a crashed one because it gets tabulated rather
+    than noticed. This is the one place that can catch it: every caller below reads
+    the label off the model, not off its own arguments.
     """
     if embed_init_mode not in EMBED_INIT_MODES:
         raise ValueError(
             f"unknown embed_init_mode: {embed_init_mode!r}; expected one of "
             f"{EMBED_INIT_MODES}"
+        )
+    if neuron_model not in NEURON_MODELS:
+        raise ValueError(
+            f"unknown neuron_model: {neuron_model!r}; expected one of {NEURON_MODELS}"
+        )
+    if arm == "baseline" and neuron_model != "lif":
+        raise ValueError(
+            f"arm 'baseline' does not accept neuron_model={neuron_model!r}: the "
+            "baseline is a trained GRU and has no spiking neuron model to choose. "
+            "Ignoring the flag here would put a checkpoint and a train_log.jsonl "
+            f"labelled neuron_model={neuron_model!r} on disk for a run that trained "
+            "a GRU. Pass --arm reservoir, or leave --neuron-model at 'lif'."
         )
     if arm == "baseline":
         model = PolicyValueGRU(obs_dim=OBS_DIM, embed_dim=32, hidden_dim=192, n_actions=N_ACTIONS,
@@ -336,7 +413,9 @@ def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
                                      n_actions=N_ACTIONS, use_tensor_train=True, tt_rank=8,
                                      tt_n_cores=4, context_len=64, seed=seed,
                                      embed_init_mode=embed_init_mode, embed_scale=embed_scale,
-                                     obs_mean=OBS_MEAN)
+                                     obs_mean=OBS_MEAN, neuron_model=neuron_model,
+                                     rf_period_min=rf_period_min,
+                                     rf_period_max=rf_period_max)
         init_state_fn = model.init_state
 
         # FOUR state components in BOTH neuron models -- `imem` is the
@@ -368,7 +447,42 @@ def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
     # actually built, not passed separately and possibly disagreeing.
     model._embed_init_mode = embed_init_mode
     model._embed_scale = float(embed_scale)
+    # Same reasoning again, and it carries more weight here than for any other
+    # label: the neuron model changes which BUFFERS the state dict contains, so a
+    # checkpoint that did not carry it could not even be reconstructed -- see
+    # `neuron_config_from_checkpoint`, which is how training/evaluate.py reads it
+    # back before it builds anything.
+    model._neuron_model = neuron_model
+    model._rf_period_min = float(rf_period_min)
+    model._rf_period_max = float(rf_period_max)
     return model, optimizer
+
+
+def neuron_config_from_checkpoint(ckpt: dict) -> dict:
+    """The `build_model` neuron-model keyword arguments a checkpoint was written
+    under, as a dict ready to splat: `{"neuron_model", "rf_period_min",
+    "rf_period_max"}`.
+
+    THE READ ORDER THIS FUNCTION EXISTS TO ENFORCE: an `rf` checkpoint carries
+    five buffers (`reservoir.rf.{omega,cos_omega,sin_omega,beta,threshold}`) that a
+    LIF model does not have, so `load_state_dict` at default strictness REFUSES it.
+    A loader therefore cannot build the model first and let the load overwrite the
+    buffers, the way it can (and does) for every other label -- it has to read the
+    file's own construction arguments before constructing anything.
+
+    BACKWARD COMPATIBILITY, load-bearing, same rule as `load_checkpoint`'s: the 400
+    checkpoints under `checkpoints/` and `checkpoints_v2/` predate all three keys
+    and contain none of them. Every read goes through `.get(...)` with the
+    historical default, so a pre-existing file reads back as
+    lif/2.0/32.0 -- which is precisely what it is -- and evaluates exactly as it
+    did before this flag existed. A direct index would make all 40 completed runs
+    unloadable and take the published v1/v2 results with them.
+    """
+    return {
+        "neuron_model": ckpt.get("neuron_model", "lif"),
+        "rf_period_min": float(ckpt.get("rf_period_min", RF_PERIOD_MIN_DEFAULT)),
+        "rf_period_max": float(ckpt.get("rf_period_max", RF_PERIOD_MAX_DEFAULT)),
+    }
 
 
 def save_checkpoint(model, optimizer, step: int, path: str):
@@ -398,6 +512,13 @@ def save_checkpoint(model, optimizer, step: int, path: str):
     identical getattr defaults ("legacy"/1.0 = the historical init): two checkpoints
     with the same arm+seed but different embedding initialisations are not the same
     experiment either.
+
+    `neuron_model`/`rf_period_min`/`rf_period_max` go one step further than
+    metadata: they are the arguments a READER has to reconstruct the model from
+    before it can load this file at all, because an `rf` state dict contains
+    buffers a LIF model does not have. See `neuron_config_from_checkpoint`. Same
+    getattr defaults as everywhere else, so a model built outside `run_training`
+    self-labels exactly as the 400 checkpoints already on disk implicitly are.
     """
     if getattr(model, "_arm", None) == "reservoir":
         model.assert_reservoir_frozen()
@@ -407,11 +528,17 @@ def save_checkpoint(model, optimizer, step: int, path: str):
                 "grad_clip_mode": getattr(model, "_grad_clip_mode", "global"),
                 "run_tag": getattr(model, "_run_tag", None),
                 "embed_init_mode": getattr(model, "_embed_init_mode", "legacy"),
-                "embed_scale": float(getattr(model, "_embed_scale", 1.0))}, path)
+                "embed_scale": float(getattr(model, "_embed_scale", 1.0)),
+                "neuron_model": getattr(model, "_neuron_model", "lif"),
+                "rf_period_min": float(
+                    getattr(model, "_rf_period_min", RF_PERIOD_MIN_DEFAULT)),
+                "rf_period_max": float(
+                    getattr(model, "_rf_period_max", RF_PERIOD_MAX_DEFAULT))}, path)
 
 
 def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
-                    expected_seed: int = None, expected_grad_clip_mode: str = None) -> int:
+                    expected_seed: int = None, expected_grad_clip_mode: str = None,
+                    expected_neuron_model: str = None) -> int:
     """Restore a checkpoint into `model`/`optimizer`, returning its step.
 
     `expected_arm`/`expected_seed` are checked BEFORE `load_state_dict`, so a
@@ -439,6 +566,23 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
     accumulated under the other rule, which is a scientific hazard but a legitimate
     thing to do deliberately -- and raising here would break resuming any of the
     existing runs.
+
+    `expected_neuron_model` RAISES, and deliberately not by the same rule. A
+    grad-clip mismatch changes OPTIMISATION: both checkpoints are instances of the
+    same architecture, the restored tensors all fit, and a deliberate switch
+    mid-run is a coherent (if hazardous) experiment someone might mean to perform.
+    A neuron-model mismatch changes the ARCHITECTURE: the two models do not have
+    the same buffers (`rf` carries `reservoir.rf.omega` and four more), so the
+    `load_state_dict` below cannot even succeed -- warning would buy nothing except
+    that torch's unexpected-key dump lands three frames later with no mention of
+    the flag that caused it. And in the one direction where the shapes DO happen to
+    line up, silence would be worse still: the frozen reservoir's dynamics would
+    change mid-run and the resulting checkpoint would be a valid instance of
+    neither model. That is the same class of error as an `arm` mismatch, which has
+    always raised, and it gets the same treatment.
+    Backward compatibility is unaffected: a checkpoint with no `neuron_model` key
+    reads back as "lif" (see `neuron_config_from_checkpoint`), which is what the
+    400 existing files are, so resuming any of them under the default is a match.
     """
     # weights_only=True: these checkpoints hold only tensors/state dicts, and
     # torch.load's default (weights_only=False) unpickles arbitrary Python
@@ -470,6 +614,19 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
             "The restored Adam moments were accumulated under the other rule; the "
             "resulting run is not a clean instance of either. Use --run-tag so this "
             "does not land in a directory labelled as one of them."
+        )
+    # .get via neuron_config_from_checkpoint, for the same reason: pre-existing
+    # checkpoints have no such key and read back as "lif", which is what they are.
+    recorded_neuron_model = neuron_config_from_checkpoint(ckpt)["neuron_model"]
+    if expected_neuron_model is not None and recorded_neuron_model != expected_neuron_model:
+        raise ValueError(
+            f"checkpoint neuron_model mismatch: {path!r} was written by "
+            f"neuron_model={recorded_neuron_model!r}, but it is being loaded into a "
+            f"neuron_model={expected_neuron_model!r} model. Unlike the clipping rule, "
+            "the neuron model is part of the ARCHITECTURE -- the two reservoirs do "
+            "not even hold the same buffers -- so there is no state to carry across "
+            "and the resulting run would be a valid instance of neither. Pass "
+            f"--neuron-model {recorded_neuron_model} to continue that run."
         )
     model.load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
@@ -524,7 +681,10 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                  value_coef: float = 0.5, entropy_coef: float = 0.01,
                  novelty_coef: float = 0.05,
                  grad_clip_mode: str = "global", run_tag: str = None,
-                 embed_init_mode: str = "legacy", embed_scale: float = 1.0):
+                 embed_init_mode: str = "legacy", embed_scale: float = 1.0,
+                 neuron_model: str = "lif",
+                 rf_period_min: float = RF_PERIOD_MIN_DEFAULT,
+                 rf_period_max: float = RF_PERIOD_MAX_DEFAULT):
     """Collect -> GAE -> replay-with-gradients -> one PPO update, repeated.
 
     `n_envs` is accepted (it is part of the CLI/interface contract and of the
@@ -558,6 +718,30 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                   on the reservoir arm). On its own it is a palliative, not a fix:
                   it scales DC and AC together and floors at ~20% silent.
 
+    `neuron_model` selects the reservoir arm's frozen neuron dynamics, one of
+    NEURON_MODELS, and is REJECTED on the baseline arm unless it is the default
+    (see `build_model`):
+
+      "lif"       (default) snntorch's Leaky, bit-identical to the path every
+                  existing checkpoint was produced under. Does not change, ever --
+                  docs/EXPERIMENT_LOG.md §23.5's G0e-i makes the published v2 LIF
+                  runs the resonate-and-fire pilot's experimental control, and a
+                  control that has drifted is not a control.
+      "rf"        resonate-and-fire (§23.2): one frozen complex pole per unit,
+                  |lambda| = beta = 0.9 held identical to LIF so the memory horizon
+                  is unchanged by construction. Zero new trainable parameters.
+                  Hypothesis H10 (§23.3): mean DC gain falls 10.0 -> 1.7846 while
+                  the AC accumulation gain 1/sqrt(1-beta^2) = 2.2942 does not move
+                  at all, so the DC/AC ratio flips from 4.3589 to 0.7779 -- and
+                  because that is a property of the FROZEN pole rather than of a
+                  trainable bias, it cannot decay as the embedding trains, which is
+                  the failure mode `--embed-init-mode centered` has (§21.5).
+      rf_period_min/rf_period_max bound the log-uniform resonant-period draw, in
+                  env steps. §23.2 fixes them at 2 (the Nyquist period) and 32 (one
+                  quarter of the 128-step BPTT window) BEFORE measurement and does
+                  not search them; they are arguments only so the pre-registered
+                  values are visible and recorded rather than buried in a default.
+
     `run_tag` appends a third coordinate to the output directory so a re-run under
     different settings cannot overwrite the completed matrix. All of these are
     recorded in every checkpoint and every log line, because a run whose clipping
@@ -583,7 +767,9 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     # a separate argument, threaded below -- see the module docstring.
     torch.manual_seed(seed)
     model, optimizer = build_model(arm, seed=seed, embed_init_mode=embed_init_mode,
-                                   embed_scale=embed_scale)
+                                   embed_scale=embed_scale, neuron_model=neuron_model,
+                                   rf_period_min=rf_period_min,
+                                   rf_period_max=rf_period_max)
     # Stamped onto the model for the same reason arm/seed are (build_model): a
     # checkpoint's labels are then structurally incapable of disagreeing with the
     # run that produced it.
@@ -593,7 +779,8 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     if resume_from and os.path.exists(resume_from):
         start_step = load_checkpoint(model, optimizer, resume_from,
                                      expected_arm=arm, expected_seed=seed,
-                                     expected_grad_clip_mode=grad_clip_mode)
+                                     expected_grad_clip_mode=grad_clip_mode,
+                                     expected_neuron_model=neuron_model)
     # dim=OBS_DIM: novelty is scored on the game state the agent reached, not on
     # the policy's logits. See collect_rollout_with_model's own note -- scoring
     # logits changes the reward FUNCTION per arm, not merely the reported metric.
@@ -699,6 +886,16 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                 # another. Pre-existing log files simply lack these keys, which reads
                 # back as the historical ("legacy", 1.0) exactly as it should.
                 "embed_init_mode": embed_init_mode, "embed_scale": float(embed_scale),
+                # On every line for the third time and the same reason: a learning
+                # curve whose NEURON MODEL is unknown cannot be compared with
+                # another, and the rf pilot's whole output is a comparison of two
+                # curves. The period bounds ride along because two rf runs with
+                # different bounds are different experiments, not one experiment
+                # with a footnote. Pre-existing log files simply lack these keys,
+                # which reads back as ("lif", 2.0, 32.0) exactly as it should.
+                "neuron_model": neuron_model,
+                "rf_period_min": float(rf_period_min),
+                "rf_period_max": float(rf_period_max),
                 **{k: v for k, v in stats.items() if k not in ("final_step", "updates")},
             })
             if step - last_checkpoint_step >= checkpoint_every:
@@ -715,7 +912,10 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     save_checkpoint(model, optimizer, step, os.path.join(run_dir, f"step_{step}.pt"))
     stats.update({"arm": arm, "seed": seed, "run_dir": run_dir, "log_path": log_path,
                   "grad_clip_mode": grad_clip_mode, "run_tag": run_tag,
-                  "embed_init_mode": embed_init_mode, "embed_scale": float(embed_scale)})
+                  "embed_init_mode": embed_init_mode, "embed_scale": float(embed_scale),
+                  "neuron_model": neuron_model,
+                  "rf_period_min": float(rf_period_min),
+                  "rf_period_max": float(rf_period_max)})
     return stats
 
 
@@ -767,6 +967,36 @@ if __name__ == "__main__":
                              "scales the DC and AC components together, so a sweep floors "
                              "at ~20%% silent units even at 32x. Use it with "
                              "--embed-init-mode centered, not instead of it")
+    parser.add_argument("--neuron-model", choices=list(NEURON_MODELS), default="lif",
+                        help="the RESERVOIR arm's frozen neuron dynamics; REJECTED on "
+                             "--arm baseline, which is a GRU and has no neuron model "
+                             "to choose. 'lif' (default) is snntorch's Leaky, the path "
+                             "every existing checkpoint was produced under, kept "
+                             "bit-identical so the published v2 runs stay this pilot's "
+                             "experimental control (docs/EXPERIMENT_LOG.md §23.5, "
+                             "G0e-i). 'rf' is resonate-and-fire (§23.2): one frozen "
+                             "complex pole per unit at |lambda| = beta = 0.9, so the "
+                             "memory horizon is unchanged by construction and only the "
+                             "rotation is added. Zero new trainable parameters. "
+                             "Predicted effect (H10, §23.3): mean DC gain 10.0 -> "
+                             "1.7846 with the AC accumulation gain 2.2942 exactly "
+                             "unchanged, flipping the DC/AC ratio 4.3589 -> 0.7779 -- "
+                             "as a property of the frozen pole, so unlike a bias "
+                             "initialisation it cannot decay as the embedding trains")
+    parser.add_argument("--rf-period-min", type=float, default=RF_PERIOD_MIN_DEFAULT,
+                        help="lower bound of the log-uniform resonant-period draw, in "
+                             "env steps (default: 2.0 = the Nyquist period of the "
+                             "discrete-time system; nothing faster is representable). "
+                             "Ignored unless --neuron-model rf")
+    parser.add_argument("--rf-period-max", type=float, default=RF_PERIOD_MAX_DEFAULT,
+                        help="upper bound of the log-uniform resonant-period draw, in "
+                             "env steps (default: 32.0 = one quarter of the 128-step "
+                             "rollout / truncated-BPTT window, so every unit completes "
+                             "at least four cycles inside the horizon the readout ever "
+                             "receives a gradient over). Ignored unless --neuron-model "
+                             "rf. Both bounds are pre-registered in §23.2 and are NOT "
+                             "searched -- they are flags so the values are recorded, "
+                             "not so they are tuned")
     parser.add_argument("--run-tag", default=None,
                         help="optional third coordinate on the output directory: "
                              "{checkpoint-dir}/{arm}_seed{seed}_{run-tag}/. USE IT for any "
@@ -782,5 +1012,8 @@ if __name__ == "__main__":
                          checkpoint_dir=args.checkpoint_dir,
                          resume_from=args.resume_from, seed=args.seed,
                          grad_clip_mode=args.grad_clip_mode, run_tag=args.run_tag,
-                         embed_init_mode=args.embed_init_mode, embed_scale=args.embed_scale)
+                         embed_init_mode=args.embed_init_mode, embed_scale=args.embed_scale,
+                         neuron_model=args.neuron_model,
+                         rf_period_min=args.rf_period_min,
+                         rf_period_max=args.rf_period_max)
     print(stats)
