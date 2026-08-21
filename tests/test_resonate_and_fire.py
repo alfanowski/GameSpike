@@ -436,3 +436,53 @@ def test_forward_parallel_refuses_to_run_on_a_resonate_and_fire_reservoir():
                            use_tensor_train=False, neuron_model="rf")
     with pytest.raises(NotImplementedError, match="LIF-only"):
         res.forward_parallel(torch.randn(1, 4, 8))
+
+
+def test_the_frequency_draw_leaves_the_frozen_weights_untouched():
+    """The rf and lif reservoirs at the same seed must share W_in and the TT cores
+    BIT FOR BIT -- the omega draw comes last, so it cannot shift the stream the
+    pre-existing draws read. Stated against the lif construction directly (as well
+    as against 708b32d above) because this is what makes an lif-vs-rf comparison a
+    controlled one: two reservoirs differing only in the neuron model, not two
+    unrelated reservoirs."""
+    lif = SpikingReservoir(seed=4, **PROD)
+    rf = SpikingReservoir(seed=4, neuron_model="rf", **PROD)
+    a, b = lif.state_dict(), rf.state_dict()
+    assert set(a) < set(b), "the rf reservoir dropped a frozen weight"
+    for key in a:
+        assert torch.equal(a[key], b[key]), (
+            f"{key!r} differs between the lif and rf constructions at the same seed "
+            "-- the omega draw perturbed the generator, so the two arms are not a "
+            "controlled comparison"
+        )
+    assert sorted(set(b) - set(a)) == [
+        "rf.beta", "rf.cos_omega", "rf.omega", "rf.sin_omega", "rf.threshold"]
+
+
+def test_omega_is_reproducible_from_the_seed_alone():
+    """Like every other frozen weight here: same seed, same frequencies; different
+    seed, different frequencies. Without the first half the pilot's three seeds are
+    not reproducible; without the second they are not three seeds."""
+    assert torch.equal(_rf(reservoir_size=512, seed=7).omega,
+                       _rf(reservoir_size=512, seed=7).omega)
+    assert not torch.equal(_rf(reservoir_size=512, seed=7).omega,
+                           _rf(reservoir_size=512, seed=8).omega)
+
+
+def test_omega_is_not_reachable_in_lif_mode():
+    """A LIF reservoir has no frequencies, and asking for them is a bug in the
+    caller rather than a request for a tensor of zeros -- zeros are a VALID omega
+    (they are the LIF point of the family), so returning them would let rf-specific
+    analysis run silently against the control arm and report plausible numbers.
+
+    Matched on nn.Module's own message, not on the property's: torch's
+    `__getattr__` catches the AttributeError a property raises and re-raises its
+    generic one. The exception type is the contract."""
+    res = SpikingReservoir(seed=0, reservoir_size=64, input_dim=8)
+    with pytest.raises(AttributeError, match="no attribute 'omega'"):
+        res.omega
+
+
+def test_an_unknown_neuron_model_is_refused():
+    with pytest.raises(ValueError, match="unknown neuron_model"):
+        SpikingReservoir(seed=0, reservoir_size=64, input_dim=8, neuron_model="resonate")

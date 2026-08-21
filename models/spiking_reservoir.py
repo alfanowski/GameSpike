@@ -551,6 +551,14 @@ class SpikingReservoir(nn.Module):
         that the frozen-weight tripwire still happily checks. One buffer, one
         owner -- `named_buffers()` reports it as `rf.omega`, and the tripwire
         covers it there.
+
+        A LIF reservoir raises rather than returning a tensor of zeros: zeros are a
+        valid omega (they are exactly the LIF point of the family), so returning
+        them would let rf-specific analysis run silently against the control arm and
+        report plausible numbers. NOTE that nn.Module's own `__getattr__` catches
+        the AttributeError raised below and re-raises its generic "object has no
+        attribute 'omega'", so the message here is not what a caller sees -- the
+        exception TYPE is the contract.
         """
         if self.neuron_model != "rf":
             raise AttributeError(
