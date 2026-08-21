@@ -2248,6 +2248,23 @@ runs separated by **a power loss, a reboot, and a completely different process
 generation**. Determinism holds across all of it, which is what makes discarding a
 90%-complete batch a free operation rather than a costly one.
 
+**Completed at 03:13, once the restarted arm finished, over the FULL overlap.** The check
+above was taken at 51 updates per seed, minutes after the relaunch. Repeated across every
+overlapping update the two batches share — 7,444 to 7,510 per seed, i.e. essentially the
+entire destroyed run:
+
+| | value |
+|---|---|
+| values compared (10 seeds × ~7,470 updates × 7 float fields) | **523,236** |
+| mismatches | **0** |
+| worst absolute difference | **0.0** |
+
+**148× the earlier sample, still exactly zero.** §18.3's fifth point — that the discarded
+prefix would regenerate bit-identically and that the restart was therefore free — is no
+longer an argument from a design property; it is a measurement over half a million
+values spanning a machine-wide power loss. Nothing was lost by restarting, and the claim
+that nothing was lost is now the best-evidenced statement in this ledger.
+
 ### 18.6 Pre-flight for the baseline arm, which had never been run under the v2 flags
 
 The reservoir arm had a 30%-length pilot behind it (§14.14). **The baseline arm had
@@ -2535,6 +2552,45 @@ awaited — and `/tmp` does not survive a reboot (§18.1). The orphan trade is
 survivability for observability, and for anything that must be *acted on* rather than
 merely survive, the right answer is both: an orphan doing the work and a cheap tracked
 task doing the notifying.
+
+**Postscript: the tracked-notifier half of that recommendation did not work either.** A
+second tracked task, armed purely to notify on the reservoir arm's completion, was reaped
+within the hour as well. In this session the harness reaps tracked background tasks
+aggressively enough that they cannot be relied on for milestone notification at all. The
+working pattern that remains is **bounded foreground waits** — a `while [ $SECONDS -lt
+$end ]` poll loop inside a normal foreground call, which cannot be reaped because the
+session is blocked on it — repeated until the milestone lands. Orphans do the surviving,
+foreground loops do the waiting, and tracked tasks are useful for neither.
+
+**One trap inside that pattern, hit immediately.** A bounded wait that exits on timeout
+leaves its loop variable holding the value from its *last iteration*, not from the moment
+it printed. At the guard-1 transition this reported `reservoir anchored finals: 6/10` ten
+seconds *after* the guard had correctly logged `10/10` — the count was simply up to 20
+seconds stale, taken before the last four checkpoints landed. It looked exactly like the
+false pass §19.4 warns about. **Re-count fresh after a bounded wait exits; never report
+its loop variable as current state.**
+
+### 20.8 Guard 1 fired at 03:12:01 and was verified independently, as §20.6 committed to
+
+The reservoir arm finished and `guard 1 PASS: reservoir 10/10` was logged with the
+launcher exiting `rc=0`. §20.6 promised the guard would be cross-checked rather than
+trusted, because §19.4 left a known false-pass path open in the running script. Checked
+at 03:12:37, fresh:
+
+- **All ten `reservoir_seed{0-9}/step_1000064.pt` present**, every one **2,834,930 bytes**,
+  written 03:11:04–03:12:01 — the last landing at the same second the guard ran, which is
+  what made the stale-variable reading above look alarming.
+- **Zero stray entries** under `checkpoints_v2/`. The directory holds exactly twenty
+  names: the ten reservoir runs and the ten `baseline_seed{0-9}` directories stage 2 had
+  just created. **The false-pass precondition never arose.**
+- **All ten finals load** under `weights_only=True` and self-identify correctly
+  (`step=1000064`, right arm, right seed, `grad_clip_mode='per-group'`,
+  `embed_init_mode='centered'`, `embed_scale=3.0`, 31 optimizer state entries).
+- **Checkpoint and log agree per seed**: 7,813 log lines, last line `step=1000064`, ten
+  `step_*.pt` files per run. A complete run by every independent measure available.
+
+So the guard was right, and it is recorded as *verified* rather than *assumed* — which
+was the whole point of §20.6.
 
 ### 20.3 Analysis conventions, pinned so v2 is comparable to v1 line for line
 
