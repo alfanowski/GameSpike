@@ -1032,19 +1032,34 @@ existing documents; everything not listed here is decided above with its rationa
   rather than as a from-scratch discovery problem.
   This unblocks Phase 2b's RAM-map work. It does **not** change the sequencing: Phase 2a
   still runs first, for the reasons in §4.2.
-- **OPEN-3 — Which levels are the tasks in Phase 2a, and how many.** A minimal, defensible
-  set: **1-1** (the Phase 1 task, so there is continuity), **2-1** (near transfer:
-  platformer, different world, water), and optionally **2-3** (far transfer: the Marine Pop
-  autoscroller — which brings §4.1.1's reward work with it). Two tasks vs. three costs ~1.6×
-  the compute (§10).
-  **Evidence added 2026-08-21 (§14.5):** 2-1 kills a hold-right policy at frame 235 against
-  1-1's 336, burning both lives inside eight seconds — so the 1-1 → 2-1 shift is real rather
-  than cosmetic, which is the property the near-transfer task needed. Adding 2-3 now also
-  carries a *measured* cost, not just a suspected one: its reward has to be rebuilt from
-  scratch (§14.3).
-- **OPEN-4 — The exact union action set** (§6.3). *Recommended: do not decide it on paper.*
-  Fix it empirically in the implementation plan's first task, the way `DESIGN.md` §11 fixed
-  Phase 1's.
+- **OPEN-3 — Which levels are the tasks in Phase 2a, and how many. ~~OPEN~~ → RESOLVED
+  2026-08-21: the two-task set {1-1, 2-1}. 2-3 is DEFERRED, not dropped.**
+  **1-1** carries continuity with Phase 1; **2-1** is the near-transfer task, and §14.5
+  measured the shift as real rather than cosmetic — it kills a hold-right policy at frame 235
+  against 1-1's 336, burning both lives inside eight seconds. That is sufficient for a
+  meaningful near-transfer test on its own.
+  **Why 2-3 is deferred rather than included.** It costs ~1.6× the compute *and* it requires
+  the vehicle-stage reward redesign §14.3 showed is genuinely necessary — 78% of 2-3's
+  progress reward and 50% of 4-3's accrues to a policy that does nothing, and the camera term
+  is *exactly* free. That is a second, harder, not-yet-designed problem, not a scope
+  increment. **Bundling an unsolved reward-design problem into the first training step this
+  phase runs is the wrong order of operations.**
+  **This is a deferral with a standing commitment.** Far transfer stays a real future step:
+  2-3 gets its own reward-design pass, at the same rigor as everything else here, and is then
+  added. Recorded this way so "deferred" is never later read as "quietly dropped" — the same
+  distinction `DESIGN.md` §10 draws for its own out-of-scope list.
+  **Consequence that removes a dependency.** At a two-task {1-1, 2-1} scope there is no
+  vehicle stage, therefore no need to widen the action space (§6.3, §14.4), therefore **no
+  `actor_head` re-run risk**. The specialists can run at Phase 1's ten-action set with no
+  asterisk. When 2-3 is added later, the union action space arrives with it and that step
+  re-runs its own references — which it would have to do anyway.
+- **OPEN-4 — The exact union action set** (§6.3). **~~OPEN~~ → RESOLVED 2026-08-21 in favour
+  of the recommendation: do not decide it on paper.** Fix it empirically, in the
+  implementation plan's first task, the way `DESIGN.md` §11 fixed Phase 1's. Per OPEN-3's
+  resolution the question is **not live for Phase 2a's two-task scope** — it becomes live when
+  2-3 or Kirby enters, and §14.4/§14.6 have already supplied the measurements it will be
+  decided on (`up`/`down` move the craft and are inert in the platformer levels; Kirby needs
+  both).
 - **OPEN-5 — Whether the per-task critic head (§6.5) is a headline condition or an
   ablation.** *Recommended: ablation.*
 - **OPEN-6 — Whether Q4 (mitigation, §2.1) is in scope for this phase at all**, or is
