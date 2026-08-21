@@ -28,12 +28,12 @@ implementation plan is a separate document under `docs/superpowers/plans/`, writ
 way `2026-08-19-mario-ppo-reservoir.md` was — task by task, tests first.
 
 **0.3 What this document is not.** It is not a result, not a claim, and not a licence to
-spend compute. §12 proposes one bounded first step and explicitly leaves the decision to
+spend compute. §13 proposes one bounded first step and explicitly leaves the decision to
 start it with the project owner, on the same footing Phase 1's implementation had: a
 design doc and a plan existed and were signed off before any run started.
 
 **0.4 Open questions are marked.** Anything genuinely undetermined by the existing
-documents is tagged **OPEN** and collected in §11. Anything the existing documents already
+documents is tagged **OPEN** and collected in §12. Anything the existing documents already
 imply an answer to is decided here and the implication is cited, not re-litigated.
 
 ---
@@ -339,7 +339,7 @@ saying plainly rather than discovering later:
 
 **Every item above is an empirical-verification checklist scoped to 2-3 and 4-3**, to be
 worked with `envs/ram_scan_tool.py` under the same discipline that produced
-`envs/ram_map.py`. It is the substance of §12's recommended first task.
+`envs/ram_map.py`. It is the substance of §13's recommended first task.
 
 ---
 
@@ -376,7 +376,7 @@ which is most of a boot routine and most of a RAM map, handed over.
 
 Two research passes reached **opposite recommendations**, which is itself the useful signal:
 this is not determined by the existing documents and should not be silently decided here. It
-is **OPEN-2** in §11, and it is the one open item that costs the project owner something
+is **OPEN-2** in §12, and it is the one open item that costs the project owner something
 real to execute.
 
 **The case for Tetris (maximize genre distance).** Super Mario Land's own twelve levels
@@ -860,68 +860,114 @@ All figures from this project's own measurements, not estimates.
   runs**, i.e. ≈3,660 env-steps/s aggregate (`EXPERIMENT_LOG.md` §21.1).
 - **Evaluation:** 120 evaluations in 21 minutes at `--jobs 8` (same source).
 
-A Phase 2a matrix at *N* = 1,000,064 and 10 seeds per condition, with the conditions of §7.1
-and the Q3 ablation, is on the order of **60–80 training runs totalling ~100M env steps**,
-which at the measured 10-way aggregate is **roughly 7–8 hours of wall clock** — one
-unattended overnight run, the same shape as Phase 1 v2. Evaluation, even at 3–4× v2's
-matrix size because of the all-checkpoints-on-all-tasks requirement, stays well inside two
-hours.
+**The two-task Phase 2a matrix, counted rather than hand-waved:**
+
+| condition | runs | steps/run | env steps |
+|---|---|---|---|
+| SPEC-A, SPEC-B | 2 × 10 | 1M | 20M |
+| SPEC-2N (task A only) | 1 × 10 | 2M | 20M |
+| INT (unconditioned) | 10 | 2M | 20M |
+| SEQ (unconditioned) | 10 | 2M | 20M |
+| INT + SEQ (task-conditioned, Q3) | 20 | 2M | 40M |
+| INIT | 2 × 10 | 0 | ~0 |
+| **total** | **~80 runs** | | **~120M** |
+
+At the measured 10-way aggregate of ≈3,660 env-steps/s that is **≈9 hours of wall clock** —
+one unattended overnight run, the same shape as Phase 1 v2's. **A three-task testbed
+(OPEN-3) is roughly 1.6× that**, i.e. still one long night rather than two.
+
+Evaluation grows faster than training does, because §8.2 requires every checkpoint to be
+scored on every task: on the order of 300–500 evaluations against v2's 120. At v2's measured
+rate that is still **under two hours**.
 
 **This is affordable, and that is a design input, not a footnote.** It is why 10 seeds per
-condition (Phase 1's *n*, and above the 3–5 common in published deep RL) is proposed rather
-than 3, and why the answer to "can we afford the controls" is yes.
+condition (Phase 1's *n*, above the 3–5 common in published deep RL, below Continual World's
+20) is proposed rather than 3, and why the answer to "can we afford the controls" is yes.
 
 The reservoir arm's ~3× throughput penalty (`RESULTS.md` §20) does **not** apply — Phase 2
 runs the GRU only.
 
 ---
 
-## 11. Open decisions — for the project owner
+## 11. Risk register
+
+Same format as `DESIGN.md` §9, and the same rule: a risk listed here with a mitigation is
+not thereby solved.
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| One 132,715-parameter policy simply cannot hold two tasks | High — **this is the experiment** (Q1) | The controls (§2.2) make a negative answer informative rather than a failed run, exactly as `DESIGN.md` §5's control did for Phase 1 |
+| Progress-based reward is degenerate in the autoscroll vehicle stages (§4.1.1) | **High, and already realised** | Vehicle stages get their own reward definition (survival + score delta); "define and validate it" is its own plan task with its own acceptance test |
+| `read_level_progress()` / `0xC0AB` semantics break in the vehicle stages (§4.4) | High | Empirical confirmation checklist scoped to 2-3 and 4-3, with `envs/ram_scan_tool.py`, **before** the testbed depends on it — §13's first task |
+| PyBoy save-state loading is not bit-identically deterministic | High — it would invalidate Phase 1's whole statistical design applied to Phase 2 | Own load/replay/hash check; nobody has published such a claim, so it must be measured, not inherited |
+| A shared novelty buffer pays the agent for switching game (§7.5) | High if unnoticed, trivial to prevent | One `NoveltyGate` per task; recorded here so a shared gate reads as a regression |
+| Two tasks' checkpoints collide on `{arm}_seed{N}/` (§9 item 4) | Medium — silent matrix corruption | A task coordinate threaded through the checkpoint dict, directory naming and the aggregation regex; this failure class was already caught once (`EXPERIMENT_LOG.md` §19.4) |
+| Reward-scale imbalance makes one task dominate the gradient | Medium | Pre-registered fixed per-task reward scale (§6.4); PopArt named as the fallback |
+| Enlarging the action space silently breaks comparability with Phase 1's published returns (§6.3) | Medium | Phase 2 re-runs its own Mario specialist as the C1 reference and says so in the results, rather than letting a reader compare two tables |
+| Cross-level shift turns out too weak to measure anything | Medium | This is why Phase 2a is framed as machinery validation and a lower bound, and why it does not substitute for Phase 2b |
+| The whole phase blocks on a ROM the project owner has to supply | Medium, external | Phase 2a needs no new ROM; the split exists precisely so nothing waits |
+| Alternating-update interleaving is not a mixed minibatch (§7.2) | Low, disclosed | Stated as a limitation up front rather than discovered in review |
+
+---
+
+## 12. Open decisions — for the project owner
 
 Collected here so none of them is buried in prose. Each is genuinely undetermined by the
 existing documents; everything not listed here is decided above with its rationale.
 
-1. **Does Phase 2a (cross-level, §4) run at all, or does the phase wait for a second ROM?**
-   Recommended: run it. It builds every artefact Phase 2b needs and it is the only path that
-   does not block on an external dependency.
-2. **Which second Game Boy / Game Boy Color ROM to obtain.** Recommended: **Kirby's Dream
-   Land** (§5.3). Only he can execute this.
-3. **Which levels are the tasks in Phase 2a.** A minimal, defensible set: **1-1** (the Phase 1
-   task, so there is continuity), **2-1** (near transfer: platformer, different world, water),
-   **2-3** (far transfer: the Marine Pop shooter). Whether to use two tasks or three changes
-   the matrix size by ~50%.
-4. **The exact union action set** (§6.3) — should be fixed empirically in the implementation
-   plan's first task, the way Phase 1's was, not decided on paper.
-5. **Whether the per-task critic head (§6.5) is a headline condition or an ablation.**
-   Recommended: ablation.
-6. **Whether Q4 (mitigation) is in scope for this phase at all**, or is deferred to a Phase
-   2.5 the way build-order Phase 3 was deferred in `DESIGN.md` §7. Recommended: keep it
-   conditional on Q2, and do not plan it in detail until Q2 has a number.
+- **OPEN-1 — Does Phase 2a (cross-level, §4) run at all, or does the phase wait for a second
+  ROM?** *Recommended: run it.* It builds every artefact Phase 2b needs and it is the only
+  path that does not block on an external dependency.
+- **OPEN-2 — Which second Game Boy / Game Boy Color ROM to obtain.** *Recommended: Kirby's
+  Dream Land*, with the full Kirby-vs-Tetris tradeoff in §5.3. Two research passes disagreed
+  on this one, so the recommendation is offered with its counter-argument attached. Only the
+  project owner can execute it.
+- **OPEN-3 — Which levels are the tasks in Phase 2a, and how many.** A minimal, defensible
+  set: **1-1** (the Phase 1 task, so there is continuity), **2-1** (near transfer:
+  platformer, different world, water), and optionally **2-3** (far transfer: the Marine Pop
+  autoscroller — which brings §4.1.1's reward work with it). Two tasks vs. three costs ~1.6×
+  the compute (§10).
+- **OPEN-4 — The exact union action set** (§6.3). *Recommended: do not decide it on paper.*
+  Fix it empirically in the implementation plan's first task, the way `DESIGN.md` §11 fixed
+  Phase 1's.
+- **OPEN-5 — Whether the per-task critic head (§6.5) is a headline condition or an
+  ablation.** *Recommended: ablation.*
+- **OPEN-6 — Whether Q4 (mitigation, §2.1) is in scope for this phase at all**, or is
+  deferred the way build-order Phase 3 was deferred in `DESIGN.md` §7. *Recommended: keep it
+  strictly conditional on Q2, and do not plan it in detail until Q2 has a number.*
 
 ---
 
-## 12. Recommended next step, bounded
+## 13. Recommended next step, bounded
 
 **Not** "start training". The bounded next step, if this document is accepted, is:
 
 > Write the Phase 2a implementation plan (`docs/superpowers/plans/`), and execute only its
-> first task: **the save-state-based level-start mechanism (§4.3) plus the empirical
-> confirmation of §4.4's four unknowns about the vehicle levels.**
+> first task — **a testbed-viability probe**, comprising exactly four checks:
+>
+> 1. `start_game(world_level=…)` genuinely loads 2-1, 2-3 and 4-3 (not just their HUD).
+> 2. A `save_state()` captured after the level intro, reloaded on every `reset()`, replays
+>    **bit-identically** — verified by hashing a fixed-action replay, not asserted.
+> 3. `read_level_progress()` is measured in 2-3 and 4-3 while pressing nothing, to quantify
+>    how much of it is pure autoscroll (§4.1.1) — the number that decides the vehicle-stage
+>    reward design.
+> 4. The four unconfirmed RAM semantics of §4.4, checked with `envs/ram_scan_tool.py`.
 
-That task involves no training, costs minutes of compute rather than hours, and is a strict
-prerequisite for everything else in Phase 2a. It also answers a question that could
-*invalidate the whole Phase 2a proposal* — if save states turn out to be nondeterministic
-under PyBoy, or if `read_level_progress()` is meaningless in the vehicle stages, the testbed
-design in §4 needs revising before anything is built on it. Finding that out for the price
-of one afternoon is the cheapest risk reduction available.
+That task runs no training, costs minutes of compute rather than hours, and is a strict
+prerequisite for everything else in Phase 2a. More importantly it can **invalidate the
+Phase 2a proposal cheaply**: if save-state loading is not deterministic under PyBoy, or if
+the camera-derived progress signal is meaningless in the vehicle stages, §4's testbed design
+needs revising *before* anything is built on it. Finding that out for the price of an
+afternoon is the cheapest risk reduction available in this phase.
 
-The decision to spend compute on the actual matrix (§10) is the project owner's, and should
-be made after that task reports, on the same footing Phase 1's implementation was: a design
-document and an implementation plan existed and were reviewed first.
+**Nothing beyond those four checks should start without review.** The decision to spend
+compute on the matrix of §10 is the project owner's, and belongs after that probe reports —
+on exactly the footing Phase 1's implementation had: a design document and an implementation
+plan existed and were reviewed before any run began.
 
 ---
 
-## 13. Out of scope for this document
+## 14. Out of scope for this document
 
 - **Roadmap Phase 3 (GBA) and Phase 4 (Fire Red).** Not abandoned — `DESIGN.md` §1.1. The
   fourteen GBA ROMs on disk are not a shortcut to multi-game work: using them would change
@@ -939,6 +985,93 @@ document and an implementation plan existed and were reviewed first.
 
 ## References
 
-Carried over from `docs/DESIGN.md` and not repeated. New to this document:
+Carried over from `docs/DESIGN.md` and `docs/superpowers/plans/2026-08-19-mario-ppo-reservoir.md`
+and not repeated (reservoir computing, LIF dynamics, tensor-train construction, PPO, PyBoy,
+Whidden's Pokémon Red work, `pokemonred_puffer`). New to this document, grouped by what they
+are load-bearing for:
 
-*(Bibliography completed alongside §8.)*
+**Continual-RL benchmarks and protocols**
+
+- Powers, Xing, Kolve, Mottaghi, Gupta — *CORA: Benchmarks, Baselines, and Metrics as a
+  Platform for Continual Reinforcement Learning Agents*, CoLLAs 2022, arXiv:2110.10067.
+  Source of §8.1's per-task normalisation discussion and §8.2's continual-evaluation
+  requirement; independently reproduces CLEAR's dominance over EWC-family methods.
+- Wołczyk, Zając, Pascanu, Kuciński, Miłoś — *Continual World: A Robotic Benchmark for
+  Continual Reinforcement Learning*, NeurIPS 2021, arXiv:2105.10919. Source of the
+  reference-run normalisation convention (§8.1), the 1M-steps-per-task budget (§7.1), the
+  CW20 numbers quoted for EWC and PackNet (§2.1), and the multi-head task-conditioning
+  convention rejected in §6.2.
+- Schwarz, Czarnecki, Luketina, Grabska-Barwinska, Teh, Pascanu, Hadsell — *Progress &
+  Compress: A scalable framework for continual learning*, ICML 2018, arXiv:1805.06370.
+  Source of the six-game Atari sequence CORA inherits, and of online-EWC's 49–57% of
+  single-task performance.
+- Fedus, Ghosh, Martin, Bellemare, Bengio, Larochelle — *On Catastrophic Interference in
+  Atari 2600 Games*, arXiv:2002.12499. Context for why weight-space regularisers are weaker
+  in RL than in classification.
+
+**Metrics — the exact definitions §8.3 pre-registers**
+
+- Lopez-Paz & Ranzato — *Gradient Episodic Memory for Continual Learning*, NeurIPS 2017,
+  arXiv:1706.08840. BWT and FWT.
+- Chaudhry, Ranzato, Rohrbach, Elhoseiny — *Efficient Lifelong Learning with A-GEM*,
+  ICLR 2019, arXiv:1812.00420. The forgetting measure `F` (peak-minus-final), average
+  accuracy `A_T`, and LCA.
+- Agarwal, Schwarzer, Castro, Courville, Bellemare — *Deep Reinforcement Learning at the
+  Edge of the Statistical Precipice*, NeurIPS 2021, arXiv:2108.13264. The `rliable`
+  methodology noted in §8.5 as available rather than adopted.
+
+**Methods — what §2.1's Q4 sequences and why**
+
+- Rolnick, Ahuja, Schwarz, Lillicrap, Wayne — *Experience Replay for Continual Learning*
+  (CLEAR), NeurIPS 2019. Replay plus behavioural-cloning auxiliary losses; no extra
+  parameters, no task boundaries required.
+- Kirkpatrick et al. — *Overcoming catastrophic forgetting in neural networks* (EWC),
+  PNAS 2017, arXiv:1612.00796.
+- Mallya & Lazebnik — *PackNet: Adding Multiple Tasks to a Single Network by Iterative
+  Pruning*, CVPR 2018, arXiv:1711.05769. The strongest non-replay method in Continual
+  World's table, at the cost of needing task IDs at evaluation.
+- Rusu et al. — *Progressive Neural Networks*, arXiv:1606.04671. Parameter cost grows
+  linearly in task count; noted in §6.2's rejected alternatives by family.
+- Hessel, Soyer, Espeholt, Czarnecki, Schmitt, van Hasselt — *Multi-task Deep Reinforcement
+  Learning with PopArt*, AAAI 2019, arXiv:1809.04474. §6.4's named fallback for cross-task
+  reward-scale normalisation.
+
+**Task conditioning and shared action/observation spaces**
+
+- Caccia, Mueller, Kim, Charlin, Fakoor — *Task-Agnostic Continual Reinforcement Learning:
+  Gaining Insights and Overcoming Challenges*, arXiv:2205.14495. The `3RL` result
+  (replay + recurrence, no task ID, matching a multi-task oracle) that makes §6.2's
+  unconditioned variant the interesting one rather than the lazy one; also the 500K
+  steps-per-task "resource-constrained" protocol cited in §7.1.
+- Lee, Nachum, Yang et al. — *Multi-Game Decision Transformers*, NeurIPS 2022,
+  arXiv:2205.15241. The 18-action union action space across 41 Atari games that §6.3's
+  unmasked-union decision follows.
+- Reed et al. — *A Generalist Agent* (Gato), arXiv:2205.06175. Prompt-conditioning rather
+  than task IDs; cited in §6.3 for the union-representation pattern.
+- Espeholt et al. — *IMPALA*, ICML 2018, arXiv:1802.01561. The DMLab-30 multi-task setup
+  PopArt was built for; also the origin of §7.2's disclosed difference between mixed
+  minibatches and alternating updates.
+- SIMA Team (DeepMind) — *Scaling Instructable Agents Across Many Simulated Worlds*, 2024,
+  arXiv:2404.10179, and the SIMA 2 technical report, 2025. Cited by `DESIGN.md` §1.1 as the
+  context this phase is scoped against, and cited here **as motivation only**: SIMA is
+  pixel-based, natural-language-instruction-conditioned, 3D, and built on a large pretrained
+  backbone. Its "one policy, many games" framing is a genuine precedent; essentially none of
+  its mechanism transfers to a 132,715-parameter GRU reading twelve RAM-derived floats, and
+  this document does not pretend otherwise.
+
+**Environment and testbed**
+
+- Burda, Edwards, Pathak, Storkey, Darrell, Efros — *Large-Scale Study of Curiosity-Driven
+  Learning*, arXiv:1808.04355. The nearest published evidence on within-game level transfer
+  (NES Super Mario Bros.), used in §4.1 to calibrate how large the cross-level shift
+  plausibly is.
+- PyBoy (Baekalfen) — built-in game wrappers, verified directly in the installed package at
+  `.venv/lib/python3.12/site-packages/pyboy/plugins/`: Super Mario Land, Kirby's Dream Land,
+  Tetris, Pokémon Gen 1, Pokémon Pinball. The Super Mario Land wrapper's
+  `start_game(world_level=…)` ROM patch (§4.3) and its independent agreement with
+  `envs/ram_map.py`'s hand-confirmed addresses (§5.2).
+- `lixado/PyBoy-RL` — DDQN agents trained on both Super Mario Land and Kirby's Dream Land via
+  PyBoy; the external reference implementation cited in §5.3.
+- DataCrystal (tcrf.net) RAM maps for Kirby's Dream Land and Tetris (Game Boy), and
+  `pret/pokered`, referenced in §5.2–§5.3. **Every address taken from any of these is a
+  hypothesis to confirm empirically, never a fact to adopt** — `envs/ram_map.py:63-66`.
