@@ -277,6 +277,22 @@ project-wide roadmap.
    ("completely unproven," "never tested in any reservoir") — not part of the initial
    claim, evaluated only if the core pipeline is already validated.
 
+> **Status note added 2026-08-21, after both Phase 1 comparisons ran.** The precondition
+> stated in build-order Phase 2 above — *"once Phase 1 shows the reservoir arm beating
+> baseline"* — **is not met.** The reservoir arm lost in `docs/RESULTS.md` v1 (as
+> specified) and lost again in v2 (with the optimizer/clipping confound removed and the
+> input-calibration defect corrected, both verified removed by the pre-registered A7 and
+> A9 measurements). v1 §10 left open the reading that the precondition had not yet been
+> *fairly* tested because the losing arm was handicapped; v2 tested that reading and it
+> did not hold — the handicaps were removed at zero parameter cost, the arm improved
+> substantially in absolute terms, and it still lost by a margin no smaller than before.
+>
+> **This note records the status; it does not revise the build order.** Whether to stop
+> at the literal precondition, or to proceed on some other basis, is the project owner's
+> decision and is deliberately left open here — see `docs/RESULTS.md` §22 for the
+> evidence that decision should rest on. Nothing in §7 is edited, per this project's
+> append-only practice for statements that turn out to be superseded by results.
+
 ## 8. Testing
 
 Same discipline as the LM project's 152-test suite: reservoir-frozen invariant asserted
