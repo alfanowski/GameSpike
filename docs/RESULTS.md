@@ -803,3 +803,514 @@ statement stays on the page with the correction beneath it.
 
 Until v2 exists, **§1 is the answer this repository has to `DESIGN.md` §5**, and §6 is
 the reason it is v1.
+
+---
+---
+
+# Phase 1 Results — v2, the corrected comparison
+
+**Version: v2.** Appended beneath v1, never edited into it. **v1's numbers stand exactly
+as written, including where v2 contradicts them** — the same append-only rule
+`EXPERIMENT_LOG.md` §11 applies to itself. v1 §12 promised this section; it is superseded
+by it, not replaced with it.
+
+**Read v1 first.** v1's headline — the frozen spiking reservoir loses to the
+matched-parameter trained GRU baseline under the pre-registered protocol — is the answer
+this repository gave to `DESIGN.md` §5 *as specified*, and it is not withdrawn. v2 asks
+one question: does that answer survive removing the optimizer/clipping confound v1 §6
+documented? Neither the negative headline nor the confound cancels the other, and neither
+should be quoted without the other.
+
+Date: 2026-08-21
+Scope: `docs/DESIGN.md` §5 / §5.1, re-run under the corrected configuration
+pre-registered in `EXPERIMENT_LOG.md` §14.11. The structure of this section was fixed in
+`EXPERIMENT_LOG.md` §17.9 **before any v2 number existed**, so it cannot have been chosen
+to flatter them.
+
+---
+
+## 13. Headline (v2)
+
+**Under the corrected protocol the frozen spiking reservoir still loses to the
+matched-parameter trained GRU baseline on the declared scoreboard
+(`mean_extrinsic_return`) — in all four trained conditions, by 7.26 to 8.97 points of
+mean episode return, with exact two-sided permutation p-values between 0.000141 and
+0.003497 and Cohen's *d* between −1.45 and −2.22.** Every trained bootstrap 95% CI
+excludes zero, on the losing side. In the headline condition (`final`, `continuous`) the
+gap is **−8.97 points, p = 0.000141, d = −2.2237**.
+
+**The verdict is unchanged from v1. Its evidential status is not.** Three things changed,
+and all three make v2 the more informative measurement:
+
+1. **The confound v1 could not resolve is gone.** v1 §6.3 stated plainly that the
+   as-specified comparison *"does not cleanly separate 'the frozen reservoir is a weaker
+   feature extractor' from 'the frozen reservoir's readout was trained far more slowly by
+   an optimizer/clipping interaction'."* Under per-group clipping the readout's effective
+   optimizer step now sits **inside the healthy GRU's own band** (`EXPERIMENT_LOG.md`
+   §15.2). That alternative explanation is no longer available, so a v2 loss is
+   attributable to the architecture in a way a v1 loss was not.
+2. **Both arms got substantially better, and the reservoir got better faster** — its mean
+   per-update extrinsic *training* reward rose 0.018854 → 0.082267 (4.4×) while the
+   baseline moved 0.109769 → 0.113186. The training-reward gap closed from **5.82× to
+   1.38×**. The corrections worked, and they were not enough.
+3. **The metric that flattered the reservoir in v1 no longer does** (§17 below). v1 §5
+   found the reservoir surviving ~6× longer per episode and earning ~6× less per step, so
+   episode return — an integral over the episode — closed part of a per-step gap it never
+   actually closed. **In v2 the two arms' episode lengths are statistically
+   indistinguishable** (353.1 vs 336.9 steps, p = 0.0725), so the return scoreboard and
+   the per-step normalisation now agree: 1.26× and 1.32× respectively. **v2's headline is
+   not conservative and not inflated; it is simply the number.**
+
+`README.md`'s standing commitment applies unchanged: the mandatory-control design exists
+so that a negative result is scientifically informative rather than a silently discarded
+run. This is the second such result and it is reported the same way as the first.
+
+---
+
+## 14. What changed from v1, exactly
+
+Three flags, **applied identically to both arms**, and nothing else:
+
+| | v1 | v2 |
+|---|---|---|
+| gradient clipping | `--grad-clip-mode global` | `--grad-clip-mode per-group` |
+| embedding initialisation | `--embed-init-mode legacy` | `--embed-init-mode centered` |
+| embedding weight-init scale | `--embed-scale 1.0` | **`--embed-scale 3.0`** |
+| untrained controls | `checkpoints_init/` (legacy init) | `checkpoints_v2_init/` (rebuilt, centred init) |
+
+**`--embed-scale 3.0` is stated explicitly because v1 §12 omitted it**, and
+`EXPERIMENT_LOG.md` §14.8 records why that omission would have been costly: followed
+literally, v1 §12's recipe specifies `centered` at the default scale of 1.0, which is
+**worse than doing nothing** — 65.9454% of reservoir units silent, against 45.5917% for
+the v1 default — because centring removes the DC drive without replacing it and starves
+the reservoir. The validated pairing is `centered` **with** scale 3.0. The bias and the
+gain are a fix only together.
+
+Everything else is held: 10 seeds per arm (0–9), 1,000,064 env steps per run, 7,813 PPO
+updates, `lr = 3e-4`, `rollout_len = 128`, `MAX_GRAD_NORM = 0.5`, the same 12-dimensional
+RAM observation, the same action set, the same novelty-gate curiosity signal on both arms,
+the same evaluation protocol (30 episodes, eval seed 0, both recurrent-state regimes,
+three checkpoint selections), and the same exact statistics.
+
+**Why both arms receive both treatments.** The baseline GRU needs neither — its embedding
+feeds a trainable recurrent core that can learn to absorb a DC offset, and its gradients
+never explode. It gets them anyway, because **a treatment only one arm receives is not a
+control**. The resulting asymmetry in benefit is a *result*, not a licence.
+
+**Parameter parity is unchanged**: the centred initialisation writes into a bias tensor
+that already existed, so it costs zero new parameters. The arms remain at 139,179
+(reservoir) against 132,715 (baseline), ratio 1.0487.
+
+---
+
+## 15. Primary result (v2)
+
+Differences are **reservoir minus baseline**; negative favours the baseline. Means and
+standard deviations are over the 10 training seeds of each arm; n = 10 versus n = 10
+throughout, one number per training seed (§2.4).
+
+| condition | reservoir mean ± SD (n=10) | baseline mean ± SD (n=10) | diff | exact permutation p | Cohen's d |
+|---|---|---|---|---|---|
+| final, continuous | 34.2404 ± 2.7438 | 43.2060 ± 4.9982 | **−8.9656** | **0.000141** | **−2.2237** |
+| final, reset128 | 34.3238 ± 3.2248 | 41.7829 ± 6.0647 | −7.4592 | 0.002327 | −1.5358 |
+| best, continuous | 34.0465 ± 2.6659 | 41.4210 ± 5.8346 | −7.3746 | 0.001061 | −1.6258 |
+| best, reset128 | 33.9450 ± 3.5979 | 41.2004 ± 6.1027 | −7.2554 | 0.003497 | −1.4484 |
+| init (untrained), continuous | 11.6202 ± 13.9639 | 8.0019 ± 2.9485 | +3.6183 | 0.435223 | +0.3585 |
+| init (untrained), reset128 | 10.0015 ± 10.4898 | 8.0115 ± 3.1401 | +1.9900 | 0.573546 | +0.2570 |
+
+Exact Mann-Whitney U, same data: final/continuous U = 6.0 (p = 0.000325), final/reset128
+U = 15.0 (p = 0.006841), best/continuous U = 11.0 (p = 0.002089), best/reset128 U = 12.0
+(p = 0.002879), and both untrained rows U = 49.0 / 51.0 (p = 0.970512).
+
+Bootstrap 95% CIs on the difference of means (20,000 resamples, `default_rng(0)`):
+
+| condition | 95% CI on the difference |
+|---|---|
+| final, continuous | [−12.3127, −5.6187] |
+| final, reset128 | [−11.6248, −3.4802] |
+| best, continuous | [−11.2784, −3.6950] |
+| best, reset128 | [−11.5210, −3.1817] |
+| init, continuous | [−4.4561, 12.1346] |
+| init, reset128 | [−4.1967, 8.6090] |
+
+Four observations:
+
+1. **The direction is the same in all four trained conditions**, under both
+   checkpoint-selection rules and both recurrent-state regimes, with every trained CI
+   entirely below zero. As in v1, the result does not depend on which regime is scored or
+   which selection rule is applied.
+2. **The seed-to-seed spread has reversed between the arms.** In v1 the reservoir was the
+   noisier arm (SD 4.51–7.52 against the baseline's 2.05–3.41). In v2 the **reservoir is
+   the more consistent arm** (SD 2.67–3.60 against the baseline's 5.00–6.10). The
+   corrected reservoir arm learns something reliably; it is reliably worse. This is a real
+   change and it is not one that favours the reservoir on the scoreboard.
+3. **`reset128` still does not rescue the reservoir.** If the frozen 8192-dim reservoir's
+   advantage were memory horizon, the matched-regime column is where the gap should
+   narrow most. It narrows (−8.97 → −7.46 at `final`) but never closes, and under `best`
+   the two regimes are within 0.12 points of each other. There is no regime in this matrix
+   where the reservoir wins.
+4. **The untrained rows are the control, not a result** — §16.1.
+
+---
+
+## 16. The two controls (v2)
+
+### 16.1 The untrained arms are statistically indistinguishable
+
+The `init` rows compare random-initialised, never-trained policies of the two arms under
+the same evaluation procedure: p = 0.435223 (continuous) and p = 0.573546 (reset128),
+Cohen's *d* of +0.3585 and +0.2570, and bootstrap CIs straddling zero in both regimes.
+Exact Mann-Whitney gives p = 0.970512 in both.
+
+**The arms start equivalent**, so §15's trained gap is attributable to what was learned,
+not to one arm having been handed a better starting point. These are **fresh** controls
+built under the *centred* initialisation (`checkpoints_v2_init/`, 20 runs at `--steps 0`)
+— v1's controls were built under `legacy` and would have been the wrong control for v2
+(`EXPERIMENT_LOG.md` §14.9).
+
+The same caveat v1 §4.1 states applies here: absence of a detectable difference at n = 10
+is not proof of equality, and the CIs ([−4.4561, 12.1346] and [−4.1967, 8.6090]) are wide
+next to a trained gap of about 9. What it rules out is a large initialisation advantage
+*in the baseline's favour* that could have produced §15 on its own; as in v1, the
+untrained point estimates lean slightly the other way.
+
+### 16.2 Both arms learn significantly above their own initialisation
+
+`final` versus `init`, same arm, same seeds, `continuous` regime:
+
+| arm | trained − untrained | Cohen's d | exact permutation p |
+|---|---|---|---|
+| baseline | +35.204 | +8.579 | 0.000011 |
+| reservoir | +22.620 | +2.248 | 0.000043 |
+
+0.000011 is the design's floor (2/184,756). **The reservoir arm is a working arm that
+loses, not a broken one** — and it now improves on its own initialisation by 22.62 points
+(against 18.45 in v1) at a much stronger *d* (+2.248 against +1.790). It learns more than
+it did in v1, and still loses to an arm that learned more again.
+
+---
+
+## 17. The per-step decomposition — v1's most important caveat does NOT carry over
+
+`EXPERIMENT_LOG.md` §17.9 required this to be **recomputed rather than assumed**, and
+that instruction earned its keep: this is the largest qualitative change between the two
+versions.
+
+`final` checkpoints, means over the 10 training seeds. Reward per step is computed **per
+seed** as `mean_extrinsic_return / mean_episode_length` and *then* averaged over seeds —
+never as a ratio of the two mean columns (`analysis/per_step_decomposition.py` documents
+why the orderings are not interchangeable, and its tests pin the distinction).
+
+**v2, continuous:**
+
+| | episode return | mean episode length | reward per step |
+|---|---|---|---|
+| baseline trained | 43.206 | 336.88 | 0.127974 |
+| reservoir trained | 34.240 | 353.07 | 0.097147 |
+| baseline untrained | 8.002 | 2779.06 | 0.002860 |
+| reservoir untrained | 11.620 | 2600.90 | 0.005668 |
+
+- Baseline / reservoir **reward-per-step ratio: 1.3173×**, exact permutation p = 0.000022.
+- **Episode-length difference: +16.19 steps, p = 0.072517 — not significant.**
+- `reset128` agrees: per step 0.125382 vs 0.096973, ratio **1.2930×** (p = 0.000054);
+  lengths 331.93 vs 354.71 (p = 0.048735).
+
+**The strategic divergence v1 found has disappeared.** v1 §5's central observation was
+that the two arms *"did not learn worse and better versions of the same strategy — they
+learned qualitatively different strategies"*: the baseline moved right fast and died fast
+(~315-step episodes at 0.11455/step), while the reservoir survived without progressing
+(~1917-step episodes at 0.01921/step). **In v2 the reservoir's episodes are 353 steps.**
+It abandoned the survival strategy and now plays the same game the baseline plays, only
+less well.
+
+**Consequence for the headline, and it cuts against the reservoir.** v1's headline was
+*conservative*, because a ~6× longer episode inflated the reservoir's integral return and
+closed part of a per-step gap it never closed. **That correction no longer applies.** With
+episode lengths equal, the return ratio (43.206 / 34.240 = **1.262×**) and the per-step
+ratio (**1.317×**) are the same quantity viewed two ways, and they agree. v2's −8.97 is
+neither flattered nor understated.
+
+The untrained rows behave as in v1: both untrained arms survive far longer (2779 and 2601
+steps) while earning almost nothing per step, confirming that **long episodes are the
+untrained default here, not an achievement**. In v1 the trained reservoir had barely moved
+away from that default; in v2 it has moved essentially as far as the baseline.
+
+---
+
+## 18. v1 versus v2, side by side
+
+| condition | v1 diff | v2 diff | change |
+|---|---|---|---|
+| final, continuous | −7.7167 | **−8.9656** | wider by 1.25 |
+| final, reset128 | −6.1708 | −7.4592 | wider by 1.29 |
+| best, continuous | −7.0190 | −7.3746 | wider by 0.36 |
+| best, reset128 | −7.3948 | −7.2554 | narrower by 0.14 |
+
+**Both arms improved, and the baseline improved more in absolute terms** (`final`,
+`continuous`): reservoir 28.4169 → 34.2404 (+5.82), baseline 36.1335 → 43.2060 (+7.07).
+The gap therefore widened slightly rather than closing.
+
+The training-log view, computed by the conventions pinned in `EXPERIMENT_LOG.md` §20.3 so
+the two versions are comparable line for line:
+
+| quantity | v1 | v2 |
+|---|---|---|
+| baseline/reservoir mean per-update extrinsic training reward, all 7,813 updates | 5.8220× | **1.3758×** |
+| same, final decile | 5.3252× | **1.2400×** |
+| convergence, 5th → 10th decile, baseline | +0.58% | +5.75% |
+| convergence, 5th → 10th decile, reservoir | +13.33% | +12.54% |
+
+**This is the sharpest single contrast in the two documents.** On *training* reward the
+corrections closed most of the gap — from 5.82× to 1.38×. On the *evaluation* scoreboard
+the gap did not close at all. The corrected reservoir arm optimises the training objective
+far better than v1's did and converts that into episode return no better, which is a more
+specific and more interesting negative result than v1's.
+
+**The interpretive constraint, recorded in `EXPERIMENT_LOG.md` §17.6 before any v2 number
+existed:** the v1 → v2 comparison changes **two things at once**, so no change here is
+attributable to per-group clipping or to the centred initialisation alone. §15.3's 2×2
+factorial, at three seeds and 30% of a run, attributes ~96% of the short-horizon effect to
+per-group clipping (+0.061975 of a combined +0.064706), with centring worth ~9% alone and
+~4% on top of clipping, and an interaction (−0.003143) smaller than the seed standard
+deviation (0.0126) and therefore not interpretable. **A full-scale decomposition — a third
+10-seed condition at `per-group` + `legacy` — was deliberately not run**, because the
+mandate was the corrected two-arm comparison and a third arm would have put the primary
+deliverable at risk for a secondary question. It is registered as the obvious next
+ablation.
+
+---
+
+## 19. Reservoir health over a full run: A7 and A9
+
+Both pre-registered before the v2 runs existed — A7 at `EXPERIMENT_LOG.md` §14.5, A9 at
+§15.6 — with verdict bands fixed in advance and computed **in code** by
+`analysis/reservoir_health.py`, so neither verdict is a judgement call made while looking
+at the number. Per §17.11, **both versions are measured by the same instrument**, so the
+v1 column here comes from that module and not from earlier prose.
+
+| measurement | v1 (legacy + global) | v2 (centred@3.0 + per-group) | pre-registered band | verdict |
+|---|---|---|---|---|
+| **A7** mean final dead `in_proj` columns | 9.8010% (sd 3.5288) | **0.1636% (sd 0.0892)** | <2% confirms, ≥5% falsifies | **CONFIRMED** |
+| **A9** mean final silent-unit fraction | 46.5222% (sd 0.8487) | **32.1606% (sd 2.0887)** | <40% confirms, ≥46% falsifies | **CONFIRMED** |
+
+**A7 — the dead-gradient budget is essentially eliminated.** H7 predicted fewer than ~164
+dead columns of 8192; the measured mean is **13.4 columns (0.1636%)**, a 60× reduction
+against v1's 9.8010%. The nesting property holds for **all ten seeds** — `newly_dead = 0`
+at every one of the 9 checkpoint transitions, so as in v1 no column ever dies after
+training starts; columns only wake up. The architectural criticism that a tenth of the
+trainable budget never received a gradient is **solved** by the input fix.
+
+**A9 — the centred initialisation's advantage shrinks but does not vanish**, exactly as
+H9 predicted. **It must not be read as the reservoir staying healthy.**
+`EXPERIMENT_LOG.md` §15.4 fixed a binding constraint on this prose before the runs
+launched, and it is honoured here verbatim: *centring holds the reservoir near-fully
+active for roughly the first 100k steps and roughly halves the silent fraction at 300k,
+after which the invariant decays because the trainable weight drifts and the bias does not
+follow it.* The full trajectories confirm the decay continues to the end of the run —
+silent fraction climbs from ~14% at 100k to ~36% at 1,000,064 on the worst seed.
+
+**Two costs that A9 measures and that no shipped fix controls:**
+
+- **The operating point still runs away.** Mean spike rate at the final checkpoint reaches
+  **0.194** on seed 9 — roughly **10× the ~2% band** `models/spiking_reservoir.py`
+  documents as healthy. v1's `legacy` runs ended at 0.200. The centred init changes *when*
+  the operating point leaves the healthy band, not *whether* it does.
+- **Saturated units reappear late** (0.54% by the final checkpoint on seed 9), having been
+  zero at initialisation.
+
+This is the successor problem `EXPERIMENT_LOG.md` §15.5 stated and A9 was pre-registered
+to measure rather than extrapolate: **per-group clipping fixes the optimizer pathology and
+centring fixes the *initial* operating point, and nothing in the current design regulates
+where the operating point goes after that.**
+
+**The frozen-reservoir invariant holds bit-for-bit**: max absolute difference **0.0e+00**
+across all 100 v2 checkpoint loads (and 100 v1 loads), so every reservoir evaluated here
+is bit-identical to the one its run was initialised with.
+
+---
+
+## 20. Efficiency (v2)
+
+Measured with the machine **quiet** — no training, no evaluation, nothing else running —
+which `EXPERIMENT_LOG.md` §17.9 requires explicitly, because §17.3's figures were taken
+while the matrix was contending and may not be quoted as a §8 replacement. 50,048 env
+steps per measurement, `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1`, single run.
+
+| flag set | baseline | reservoir | ratio |
+|---|---|---|---|
+| **v2** (`per-group`, `centered`, scale 3.0) | **1303.4 env-steps/s** | **439.4 env-steps/s** | **2.966×** |
+| v1 (`global`, `legacy`, scale 1.0), same session | 1310.8 env-steps/s | 440.2 env-steps/s | 2.978× |
+
+**The corrections are throughput-neutral.** Measuring both flag sets back to back on the
+same quiet machine was done specifically to answer whether the corrected configuration
+costs anything, and it does not — 2.966× against 2.978× is noise.
+
+**This also resolves, honestly, a discrepancy against v1 §8**, which reports 918 and 371
+env-steps/s for a ratio of 2.474×. Both arms measure ~40% faster here in absolute terms,
+and the *ratio* differs too. Since the v1 flag set reproduces 2.978× in this session, **the
+difference is a property of the measurement conditions, not of the flags** — machine
+state, thermal condition and measurement window differ between the two sessions. The
+defensible claim is the ratio measured within a single session; v1 §8's numbers are not
+retracted, and this paragraph is why the two tables disagree.
+
+Final checkpoint sizes, both including Adam optimizer state:
+
+| arm | final checkpoint |
+|---|---|
+| baseline | 1,604,881 bytes (1.60 MB) |
+| reservoir | 2,834,930 bytes (2.83 MB), **1.766×** |
+
+Unchanged from v1 and for the same reason: the frozen buffers — chiefly `W_in`, plus the
+four TT cores — must still be stored despite never receiving a gradient.
+
+**The efficiency result is the one finding that is robust across both versions and both
+verdicts: the reservoir arm costs about 3× the compute per env step and 1.77× the storage,
+at matched trainable-parameter count.** As in v1, **no TT compression ratio against a
+dense 8192×8192 matrix is claimed** — it was not measured.
+
+---
+
+## 21. Limitations (v2)
+
+Everything still applicable from v1 §9 carries forward and is not repeated in full: one
+game and one level; one shared hyperparameter set never tuned for the reservoir's
+architecture; a deterministic environment, so 30 episodes per checkpoint measure
+policy-sampling variance only and the unit of analysis is the training seed; n = 10 seeds
+per arm; both arms scored in a `continuous` regime neither was trained in; three of the
+twelve observation slots hardcoded to zero; and the pre-registered multiple-comparisons
+disclosure (now covering eight pre-registered ablations against two 10-seed comparisons —
+all four trained rows in §15 sit below 0.05/6 = 0.008333 and survive a Bonferroni
+correction over the six rows of that table; the two untrained rows are nowhere near
+significance under any correction).
+
+**Added by v2, and specific to it:**
+
+- **Two treatments changed at once** (§18, `EXPERIMENT_LOG.md` §17.6). No result here is
+  attributable to per-group clipping or to the centred initialisation alone.
+- **The embedding fix is transient, and was known to be before these runs launched.**
+  H14a was falsified at 22.3877% against a 15% threshold *before* the matrix launched, and
+  the launch proceeded under an explicitly recorded override of the pre-registered decision
+  rule (`EXPERIMENT_LOG.md` §15.4) — because H14a is an *efficacy* hypothesis while the
+  *validity* hypothesis H14b survived decisively. That override, and its reasoning, were
+  written down before the matrix ran, not afterwards.
+- **The per-group clipping group-count asymmetry**, disclosed in v1 §9 and load-bearing
+  here: `group_trainable_parameters` buckets by top-level submodule, giving **2 groups on
+  the reservoir arm** (`embedding`, `readout`) against **4 on the baseline** (`embedding`,
+  `gru`, `actor_head`, `critic_head`) — verified directly during v2's baseline pre-flight.
+  Clipping each group to `MAX_GRAD_NORM` separately therefore permits a larger total update
+  norm on the arm with more groups. The rule is applied identically and the grouping is
+  discovered from the model rather than hardcoded, but the counts differ, and **this
+  asymmetry favours the baseline.** It is the most substantive uncontrolled variable in
+  v2 and it is disclosed rather than buried.
+- **The fixture caveat** (`EXPERIMENT_LOG.md` §14.13). Every silent-unit fraction in §19
+  is measured against `tests/data/real_obs_6000.npy`, collected under **v1** policies.
+  Holding the observation window fixed and varying only the embedding is the right
+  controlled comparison for "did the trained embedding drift away from its centring", and
+  it is **not** a measurement of what a v2 policy experiences in situ. The DC offset is
+  policy-dependent, and a v2 agent's own observation distribution is a third distribution
+  measured by none of these. **That in-situ measurement was not taken and remains a known
+  gap.**
+- **One reservoir configuration still**: `reservoir_size = 8192`, `tt_rank = 8`,
+  `tt_n_cores = 4`, `beta = 0.9`, threshold 1.0. A8's structured-core construction
+  (`tt_bond_decay`) is **not wired into training** and is not part of v2 at all.
+- **The reservoir arm's training reward was still rising** (+12.54% from the 5th to the
+  10th decile, against the baseline's +5.75%), so as in v1 a longer budget could narrow
+  the gap and this experiment does not bound by how much. Note the baseline is now also
+  rising, where in v1 it had flattened (+0.58%).
+- **Provenance: the v2 reservoir arm was trained twice.** The first attempt reached ~95.7%
+  and was destroyed by a machine-wide power loss at 23:38:53 on 2026-08-20. It was
+  **restarted from step 0 rather than resumed**, so that both arms ran an identical
+  uninterrupted protocol and so the published recipe reproduces the published numbers. The
+  restarted runs were verified **bit-identical** to the destroyed ones over their full
+  overlap — 523,236 values compared across ten seeds and seven float fields, **0
+  mismatches** (`EXPERIMENT_LOG.md` §18). This is a note about provenance, not about the
+  data.
+
+---
+
+## 22. What v2 does and does not tell you
+
+**What it tells you.** On Super Mario Land world 1-1, with one particular frozen
+tensor-train spiking reservoir configuration, under one shared PPO hyperparameter set, at
+matched trainable-parameter count (ratio 1.0487), across 10 independently-trained seeds per
+arm and 1,000,064 env steps each, **with the optimizer/clipping confound of v1 §6 removed
+and the input-calibration defect of v1 §7 corrected at initialisation**, the frozen
+reservoir arm still scores significantly lower mean extrinsic return than the trained GRU
+baseline in every trained condition measured, and about 1.3× lower reward per step of
+experience. Both arms learn significantly above their own untrained initialisation, the
+untrained arms are statistically indistinguishable, and the two arms now converge on
+strategies of the same *shape* (near-identical episode lengths) rather than the
+qualitatively different ones v1 found.
+
+**What it does not tell you.**
+
+- **It is still not evidence about frozen reservoirs in general.** It is evidence about
+  one configuration at one parameter budget under one hyperparameter set — now a
+  *better-calibrated* instance of that configuration, but the same one. §19 shows its
+  operating point still leaves the healthy band during training.
+- **It is not a decomposition of the two fixes** (§18).
+- **It is not evidence that the remaining gap is irreducible.** The reservoir's training
+  reward was still rising at the budget's end, and the group-count asymmetry in §21 favours
+  the baseline. What it shows is that removing the two diagnosed defects — which closed the
+  *training-reward* gap from 5.82× to 1.38× — did not change the evaluation verdict.
+- **It is not evidence about the multi-game goal in `DESIGN.md` §1.1.** Roadmap Phase 2
+  (multi-game generalisation) and Phase 4 (Pokémon-style RPG targets) remain separate
+  questions this experiment bears on only by supplying the premise Phase 1 was meant to
+  establish.
+- **It resolves nothing about the entanglement-entropy diagnostic.** A8 (`EXPERIMENT_LOG.md`
+  §16) made that question *testable* for the first time by showing S̄ is tunable across
+  essentially all of [0, 1] via a structured-core bond profile, but **A8 contains no
+  training at all** and the knob is not wired into the training path. The sibling project's
+  open question remains **open, in neither direction**.
+
+**Consequence for the roadmap, which the project owner should weigh.** v1 §10 recorded
+that `DESIGN.md` §7's build order makes the next ablation conditional on the reservoir arm
+beating baseline, that Phase 1 as specified did not show that, and that taken literally
+the build order says stop — while noting the more defensible reading was that the
+precondition had not yet been *fairly* tested, because the losing arm was handicapped by a
+clipping interaction and a construction defect.
+
+**That reading has now been tested, and it did not hold.** Both handicaps were removed at
+zero parameter cost, both were verified removed by pre-registered measurements (§19: A7
+confirmed, A9 confirmed), the reservoir arm improved substantially in absolute terms, and
+it still lost by a margin no smaller than before. The precondition for build-order Phase 2
+(resonate-and-fire) and Phase 3 (DLIF, RSSR) is unmet under the fairest test this project
+has been able to construct. **The decision remains the project owner's**, and it should be
+made on this evidence rather than around it — but v2 removes the specific escape hatch v1
+left open.
+
+---
+
+## 23. Reproduction (v2)
+
+- **Training:** `scripts/run_training_matrix.py --arms {reservoir,baseline} --seeds 0-9
+  --rom "$ROM" --steps 1000000 --checkpoint-every 100000 --checkpoint-dir checkpoints_v2
+  --grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0 --jobs 10`,
+  executed from a `git worktree` pinned to commit `dc966a3` (`EXPERIMENT_LOG.md` §17.1) so
+  every import resolves from one fixed commit while the data lands in the main repository.
+- **Untrained controls:** the same flags with `--steps 0 --checkpoint-dir
+  checkpoints_v2_init`.
+- **Evaluation:** `scripts/run_eval_matrix.py --rom "$ROM" --episodes 30 --eval-seed 0
+  --jobs 8 --checkpoint-dir checkpoints_v2 --init-checkpoint-dir checkpoints_v2_init
+  --results-dir results_v2`. `training/evaluate.py` and `scripts/run_eval_matrix.py` are
+  **byte-identical** to commit `64839a9`, which v1's evaluation was pinned to, and
+  re-running one v1 evaluation from the current tree reproduced its committed result file
+  exactly — all 30 per-episode returns, lengths and episode seeds identical. **v1 and v2
+  were scored by the same harness**, which is what makes §18's side-by-side legitimate
+  rather than an artefact of harness drift.
+- **Statistics:** `scripts/run_v2_analysis.sh`. **Do not use `EXPERIMENT_LOG.md` §14.11's
+  Step 5 command** — pointing `--results-dir` at `results_v2` rather than
+  `results_v2/{final,best,init}` silently compares nothing while still printing a
+  healthy-looking training-log summary (§19.1 of that document).
+- **Per-step decomposition:** `analysis/per_step_decomposition.py`, which reproduces v1
+  §5's published figures digit-for-digit before being pointed at v2.
+- **A7/A9:** `analysis/reservoir_health.py --checkpoint-dir checkpoints_v2 --arm reservoir
+  --seeds 0-9`.
+- **Raw results:** `results_v2/{final,best,init}/eval_{arm}_seed{N}_{regime}.json`, 120
+  files, committed. Reports at `results_v2_report_{final,best,init}.{txt,json}`,
+  `results_v2_health.txt` and `results_v1_health.txt`.
+- **Checkpoints and training logs:** `checkpoints_v2/{arm}_seed{N}/` — ten `step_*.pt`
+  files and `train_log.jsonl` per run, gitignored and not distributed, reproducible from
+  the seed.
+- **The final checkpoint is `step_1000064.pt`, not `step_1000000.pt`.** Globbing for the
+  round number matches nothing.

@@ -36,6 +36,7 @@ def _balanced_factorization(n, n_cores):
 class SpikingReservoir(nn.Module):
     def __init__(self, vocab_size=256, reservoir_size=2048, spectral_radius=1.0, beta=0.9, seed=0,
                  use_tensor_train=False, tt_rank=8, tt_n_cores=4, tt_core_std=None,
+                 tt_bond_decay=1.0,
                  input_dim=None, soft_spike=False, soft_spike_sigma_frac=0.1):
         """Frozen spiking reservoir (LIF neurons, random recurrent wiring).
 
@@ -76,6 +77,13 @@ class SpikingReservoir(nn.Module):
                         (v = spectral_radius^2 / N); see _build_tt_cores. This is the
                         second, finer criticality knob (empirically tunable if the
                         reservoir fires silent or saturates).
+          tt_bond_decay-- geometric bond profile ("lambda"), in (0, 1]. DEFAULT 1.0 =
+                        NO-OP = the historical i.i.d. Gaussian construction, bit for
+                        bit. Below 1.0 it breaks the i.i.d. assumption ALONG THE BOND
+                        INDEX, which is the only thing that can move the normalised
+                        entanglement entropy; see _build_tt_cores for the full
+                        argument and for why `spectral_radius` and `tt_core_std`
+                        provably cannot.
         """
         super().__init__()
         self.reservoir_size = reservoir_size
@@ -123,7 +131,7 @@ class SpikingReservoir(nn.Module):
         else:
             # --- TT-native path: build W_res as random TT cores (no dense NxN). ---
             self._build_tt_cores(reservoir_size, spectral_radius, tt_rank, tt_n_cores,
-                                 tt_core_std, g)
+                                 tt_core_std, g, tt_bond_decay)
 
         # beta/threshold not learnable -> snntorch registers them as buffers, not
         # nn.Parameter, so this reservoir has no trainable parameters at all.
@@ -135,11 +143,83 @@ class SpikingReservoir(nn.Module):
     # ------------------------------------------------------------------ #
     # Tensor-train (MPO) construction and native matrix-vector product.
     # ------------------------------------------------------------------ #
-    def _build_tt_cores(self, N, spectral_radius, tt_rank, tt_n_cores, tt_core_std, g):
+    def _build_tt_cores(self, N, spectral_radius, tt_rank, tt_n_cores, tt_core_std, g,
+                        tt_bond_decay=1.0):
         """Build W_res natively as a square TT-matrix (MPO): a chain of `d` cores
         C_k of shape (r_{k-1}, m_k, n_k, r_k) with r_0=r_d=1, m_k=n_k, prod(m_k)=N.
         The effective (never materialized) matrix element is the ordered product of
-        the per-index core slices contracted over the bond dimensions."""
+        the per-index core slices contracted over the bond dimensions.
+
+        THE GEOMETRIC BOND PROFILE (`tt_bond_decay`, "lambda"), AND WHY IT IS THE ONLY
+        KNOB HERE THAT CAN MOVE THE ENTANGLEMENT ENTROPY. Normalised entanglement
+        entropy S-bar is computed (see `entanglement_entropy`) from the NORMALISED
+        Schmidt spectrum p = sigma^2 / sum(sigma^2) of the mixed-canonical centre
+        core. That normalisation makes S-bar exactly invariant to any GLOBAL
+        rescaling of the cores, because every singular value picks up the same
+        factor and it cancels. Both pre-existing knobs are exactly such a global
+        rescaling: with tt_core_std=None, `spectral_radius` enters only through the
+        derived scalar `s` below, and `tt_core_std` IS that scalar. Measured
+        consequence (docs/EXPERIMENT_LOG.md Section 12, A5): multiplying every core by
+        1000 moves S-bar by 2.8e-11 -- the dependence is not weak, it is zero. And
+        i.i.d. Gaussian cores generically produce a near-FLAT Schmidt spectrum
+        (measured 0.16881 ... 0.09403 against 0.125 for a perfectly uniform
+        8-dimensional bond), which pins S-bar near its maximum of 1 regardless of
+        `tt_rank` (A6: 0.96221-0.99596 over tt_rank in {4,8,16,32}).
+
+        Lowering S-bar therefore requires a DECAYING Schmidt spectrum, which requires
+        breaking the i.i.d. assumption ALONG THE BOND INDEX rather than rescaling it.
+        `tt_bond_decay=lambda` does exactly that and nothing else: bond index r is
+        multiplied by lambda^r.
+
+        WHICH AXES ARE THE BOND AXES, stated explicitly because getting it wrong
+        yields a wrong-but-plausible number. A core is (r_{k-1}, m_k, n_k, r_k):
+        axis 0 is the LEFT bond, axes 1/2 are the physical row/column modes, axis 3
+        is the RIGHT bond. This is the convention `_tt_matvec` contracts under
+        ('bpans,amnc->bpmcs': a = left bond, c = right bond) and the one
+        `entanglement_entropy` flattens under (rp, m*n, rk). The profile touches
+        ONLY axes 0 and 3; the physical modes are untouched, so this changes the
+        correlation structure of W_res, not its mode geometry.
+
+        HOW A SHARED BOND IS HANDLED. Internal bond k is shared: it is core k-1's
+        RIGHT axis and core k's LEFT axis. The profile is applied to EVERY bond axis
+        of EVERY core, so both cores adjacent to a shared bond see the IDENTICAL
+        weight vector lambda^r on it -- the construction is symmetric and no core
+        "owns" a bond. The price of that symmetry, stated rather than buried: each
+        internal bond index r is then suppressed TWICE, so the effective suppression
+        of bond index r in the contracted matrix element is lambda^(2r), and the
+        induced Schmidt values decay like lambda^(2r) (hence p like lambda^(4r)). A
+        one-sided convention would be this same family reparametrised by
+        lambda -> sqrt(lambda); it is not a different construction. The boundary
+        bonds have r_0 = r_d = 1, so their only index is 0 and lambda^0 = 1: the
+        profile is a no-op there by construction, never a hidden edge case.
+
+        lambda = 1.0 IS A NO-OP, BIT FOR BIT, AND IS THE DEFAULT. lambda^r == 1.0
+        exactly for every r, and IEEE-754 multiplication by 1.0 is exact, so the
+        cores are bit-identical to the pre-change construction. The profile is
+        applied AFTER the `torch.randn` draw and never consumes the generator, so
+        the RNG stream -- draw order, shapes, and every downstream draw -- is
+        untouched at ANY lambda: two reservoirs differing only in `tt_bond_decay`
+        differ only by the deterministic per-entry factor. That is what makes a
+        lambda sweep a controlled comparison rather than six unrelated reservoirs,
+        and it is asserted in tests/test_structured_tt_cores.py. Default 1.0 for the
+        same reason `--grad-clip-mode` defaults to `global` and `--embed-init-mode`
+        to `legacy`: published results depend on the existing construction being
+        reproducible bit-for-bit.
+
+        NOT NORMALISED, DELIBERATELY. The profile shrinks the cores (every factor is
+        <= 1), so it also shrinks the effective operator: this knob changes the
+        spectrum's SHAPE and its SCALE at the same time. Restoring the scale is the
+        pre-existing `tt_core_std` knob's job -- the two compose, and since S-bar is
+        provably invariant to `tt_core_std` (above), composing them separates a
+        genuine structural change from mere shrinkage.
+        """
+        lam = float(tt_bond_decay)
+        if not (0.0 < lam <= 1.0):
+            raise ValueError(
+                f"tt_bond_decay must be in (0, 1]; got {tt_bond_decay!r}. 1.0 is the "
+                "no-op (i.i.d. Gaussian cores); values > 1 would GROW the high bond "
+                "indices, and <= 0 would zero or sign-flip them.")
+        self.tt_bond_decay = lam
         modes = _balanced_factorization(N, tt_n_cores)
         d = len(modes)
         if d < 2:
@@ -173,6 +253,11 @@ class SpikingReservoir(nn.Module):
         for k in range(d):
             m = modes[k]  # square matrix: m_k == n_k
             core = torch.randn(ranks[k], m, m, ranks[k + 1], generator=g) * s
+            # Geometric bond profile: axis 0 (left bond) and axis 3 (right bond) only.
+            # At lam == 1.0 both factors are exactly 1.0 and this is a bit-exact no-op.
+            left = lam ** torch.arange(ranks[k], dtype=core.dtype).view(-1, 1, 1, 1)
+            right = lam ** torch.arange(ranks[k + 1], dtype=core.dtype).view(1, 1, 1, -1)
+            core = core * left * right
             self.register_buffer(f"tt_core_{k}", core)
 
     def _tt_cores(self):

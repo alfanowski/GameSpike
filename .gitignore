@@ -13,3 +13,31 @@ checkpoints_init/
 *.gbc
 .pytest_cache/
 .DS_Store
+
+# Worktree metadata created by the agent harness, not project source.
+.claude/worktrees/
+
+# v2 (corrected) matrix. A SEPARATE --checkpoint-dir rather than --run-tag: the
+# analysis path matches run directories with `^(?P<arm>[A-Za-z0-9]+)_seed(\d+)$`
+# (analysis/aggregate_results.py) and eval outputs with an equally strict
+# `eval_{arm}_seed{n}_{regime}.json`, so a `_v2` SUFFIX on the run directory would
+# silently match nothing. Putting the tag in the PARENT directory keeps every run
+# directory named exactly `{arm}_seed{n}` and needs no change to code that the v1
+# results depend on for their reproducibility.
+checkpoints_v2/**/*.pt
+checkpoints_v2/**/*.json
+checkpoints_v2/**/*.jsonl
+checkpoints_v2_init/
+checkpoints_v2/**/*.log
+# Launcher stdout for the v2 matrix. Per-job detail lives in each run's
+# launcher.log; these are the top-level driver logs, regenerable and noisy.
+checkpoints_v2_*_launch.log
+results_v2_eval.log
+pipeline_v2.log
+
+# Preserved wreckage of the 23:38:53 power loss (docs/EXPERIMENT_LOG.md §18): the
+# v2 reservoir runs as they stood at ~95.7% when the machine died. Kept rather
+# than deleted so the restarted arm's logs can be diffed against them over the
+# overlapping updates, which is a third independent check of §2's determinism
+# property. 292 MB and regenerable from a seed, so not distributed.
+checkpoints_v2_crashed/

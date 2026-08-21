@@ -1,0 +1,412 @@
+{
+  "continuous": {
+    "regime": "continuous",
+    "metric": "mean_extrinsic_return",
+    "arm_a": "reservoir",
+    "arm_b": "baseline",
+    "convention": "every signed statistic below is (arm_a=reservoir) minus (arm_b=baseline); positive means reservoir scored higher on 'mean_extrinsic_return'",
+    "reservoir": {
+      "arm": "reservoir",
+      "regime": "continuous",
+      "metric": "mean_extrinsic_return",
+      "train_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "values": [
+        33.80625,
+        32.452083333333334,
+        37.84375,
+        32.84166666666667,
+        33.44375,
+        33.97708333333333,
+        35.44166666666667,
+        28.5125,
+        34.6,
+        37.545833333333334
+      ],
+      "n": 10,
+      "mean": 34.046458333333334,
+      "std": 2.665876628123188,
+      "sem": 0.8430242105878963,
+      "min": 28.5125,
+      "max": 37.84375
+    },
+    "baseline": {
+      "arm": "baseline",
+      "regime": "continuous",
+      "metric": "mean_extrinsic_return",
+      "train_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "values": [
+        34.24583333333333,
+        38.47708333333333,
+        33.416666666666664,
+        42.00833333333333,
+        39.81458333333333,
+        45.475,
+        51.875,
+        41.208333333333336,
+        39.27708333333333,
+        48.4125
+      ],
+      "n": 10,
+      "mean": 41.42104166666667,
+      "std": 5.8346499382242625,
+      "sem": 1.84507831545494,
+      "min": 33.416666666666664,
+      "max": 51.875
+    },
+    "welch_ttest": {
+      "t_statistic": -3.6354013715547646,
+      "df": 12.600780671005896,
+      "p_value": 0.0031679262922533736
+    },
+    "permutation_test": {
+      "observed_diff": -7.374583333333334,
+      "p_value": 0.0010608586459979648,
+      "n_permutations": 184756,
+      "method": "exact"
+    },
+    "mann_whitney_u": {
+      "U": 11.0,
+      "p_value": 0.0020892420273225226,
+      "method": "exact"
+    },
+    "cohens_d": -1.6258009184584847,
+    "bootstrap_ci_diff": {
+      "observed_diff": -7.374583333333334,
+      "ci_low": -11.278354166666661,
+      "ci_high": -3.694979166666669,
+      "n_resamples": 20000,
+      "seed": 0,
+      "alpha": 0.05
+    }
+  },
+  "reset128": {
+    "regime": "reset128",
+    "metric": "mean_extrinsic_return",
+    "arm_a": "reservoir",
+    "arm_b": "baseline",
+    "convention": "every signed statistic below is (arm_a=reservoir) minus (arm_b=baseline); positive means reservoir scored higher on 'mean_extrinsic_return'",
+    "reservoir": {
+      "arm": "reservoir",
+      "regime": "reset128",
+      "metric": "mean_extrinsic_return",
+      "train_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "values": [
+        32.9375,
+        40.2125,
+        30.379166666666666,
+        37.975,
+        32.920833333333334,
+        37.110416666666666,
+        33.014583333333334,
+        28.279166666666665,
+        34.40833333333333,
+        32.2125
+      ],
+      "n": 10,
+      "mean": 33.945,
+      "std": 3.597916626455639,
+      "sem": 1.1377611370989047,
+      "min": 28.279166666666665,
+      "max": 40.2125
+    },
+    "baseline": {
+      "arm": "baseline",
+      "regime": "reset128",
+      "metric": "mean_extrinsic_return",
+      "train_seeds": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "values": [
+        34.239583333333336,
+        41.34583333333333,
+        33.61875,
+        41.075,
+        36.21041666666667,
+        53.375,
+        41.31041666666667,
+        46.708333333333336,
+        38.577083333333334,
+        45.54375
+      ],
+      "n": 10,
+      "mean": 41.20041666666667,
+      "std": 6.1027133587860884,
+      "sem": 1.9298474120900382,
+      "min": 33.61875,
+      "max": 53.375
+    },
+    "welch_ttest": {
+      "t_statistic": -3.2386343565994453,
+      "df": 14.582075666110564,
+      "p_value": 0.005682919130213578
+    },
+    "permutation_test": {
+      "observed_diff": -7.255416666666676,
+      "p_value": 0.0034965034965034965,
+      "n_permutations": 184756,
+      "method": "exact"
+    },
+    "mann_whitney_u": {
+      "U": 12.0,
+      "p_value": 0.002879473467708762,
+      "method": "exact"
+    },
+    "cohens_d": -1.448361315124531,
+    "bootstrap_ci_diff": {
+      "observed_diff": -7.255416666666676,
+      "ci_low": -11.521046875000001,
+      "ci_high": -3.1816510416666732,
+      "n_resamples": 20000,
+      "seed": 0,
+      "alpha": 0.05
+    }
+  },
+  "training_logs": {
+    "baseline": {
+      "0": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.09055960407330346,
+        "mean_extrinsic_reward_last_10pct": 0.11944697303137004,
+        "grad_norm_min": 0.0597802959382534,
+        "grad_norm_median": 31.910785675048828,
+        "grad_norm_max": 1887.085693359375
+      },
+      "1": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.0867096220790653,
+        "mean_extrinsic_reward_last_10pct": 0.12369458226632522,
+        "grad_norm_min": 0.10505707561969757,
+        "grad_norm_median": 33.41416549682617,
+        "grad_norm_max": 5564.470703125
+      },
+      "2": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.07327782390364916,
+        "mean_extrinsic_reward_last_10pct": 0.1135894736315621,
+        "grad_norm_min": 0.05825280398130417,
+        "grad_norm_median": 31.03754425048828,
+        "grad_norm_max": 4586.26025390625
+      },
+      "3": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.09034015885083227,
+        "mean_extrinsic_reward_last_10pct": 0.12179584967189501,
+        "grad_norm_min": 0.05768752470612526,
+        "grad_norm_median": 32.44502639770508,
+        "grad_norm_max": 2414.490966796875
+      },
+      "4": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.08945862676056338,
+        "mean_extrinsic_reward_last_10pct": 0.11847478693181818,
+        "grad_norm_min": 0.0772208571434021,
+        "grad_norm_median": 32.07062530517578,
+        "grad_norm_max": 2463.585205078125
+      },
+      "5": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.07868893045774648,
+        "mean_extrinsic_reward_last_10pct": 0.12830980913892445,
+        "grad_norm_min": 0.06766095012426376,
+        "grad_norm_median": 29.021944046020508,
+        "grad_norm_max": 1662.33056640625
+      },
+      "6": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.08949238756402049,
+        "mean_extrinsic_reward_last_10pct": 0.12467864716709347,
+        "grad_norm_min": 0.08227947354316711,
+        "grad_norm_median": 38.71288299560547,
+        "grad_norm_max": 25677.3515625
+      },
+      "7": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.0884182938540333,
+        "mean_extrinsic_reward_last_10pct": 0.12505376720550576,
+        "grad_norm_min": 0.06920817494392395,
+        "grad_norm_median": 28.656890869140625,
+        "grad_norm_max": 1382.110595703125
+      },
+      "8": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.0793854033290653,
+        "mean_extrinsic_reward_last_10pct": 0.11877925936299616,
+        "grad_norm_min": 0.052645035088062286,
+        "grad_norm_median": 30.447343826293945,
+        "grad_norm_max": 14351.5224609375
+      },
+      "9": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.0965759042893726,
+        "mean_extrinsic_reward_last_10pct": 0.12424725912291934,
+        "grad_norm_min": 0.05224429443478584,
+        "grad_norm_median": 34.61273193359375,
+        "grad_norm_max": 10402.0556640625
+      }
+    },
+    "reservoir": {
+      "0": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.03353385583386684,
+        "mean_extrinsic_reward_last_10pct": 0.09100412131882202,
+        "grad_norm_min": 7.407074928283691,
+        "grad_norm_median": 1065905536.0,
+        "grad_norm_max": 298002939904.0
+      },
+      "1": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.04185089228553137,
+        "mean_extrinsic_reward_last_10pct": 0.10117612636043534,
+        "grad_norm_min": 45.744144439697266,
+        "grad_norm_median": 723082688.0,
+        "grad_norm_max": 243375800320.0
+      },
+      "2": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.02640469950384123,
+        "mean_extrinsic_reward_last_10pct": 0.08853895746638925,
+        "grad_norm_min": 60.46974182128906,
+        "grad_norm_median": 2293374464.0,
+        "grad_norm_max": 1116332097536.0
+      },
+      "3": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.03959704605473752,
+        "mean_extrinsic_reward_last_10pct": 0.08875027508802817,
+        "grad_norm_min": 41.89155578613281,
+        "grad_norm_median": 218567584.0,
+        "grad_norm_max": 115042713600.0
+      },
+      "4": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.031998989676696545,
+        "mean_extrinsic_reward_last_10pct": 0.1048460507362356,
+        "grad_norm_min": 71.28780364990234,
+        "grad_norm_median": 4075400960.0,
+        "grad_norm_max": 815060418560.0
+      },
+      "5": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.030225922295134443,
+        "mean_extrinsic_reward_last_10pct": 0.09885225772247119,
+        "grad_norm_min": 29.276134490966797,
+        "grad_norm_median": 7841986560.0,
+        "grad_norm_max": 6153052356608.0
+      },
+      "6": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.0472138584346991,
+        "mean_extrinsic_reward_last_10pct": 0.10706988736395646,
+        "grad_norm_min": 17.32651138305664,
+        "grad_norm_median": 475782048.0,
+        "grad_norm_max": 76295282688.0
+      },
+      "7": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.04365271887003841,
+        "mean_extrinsic_reward_last_10pct": 0.09374312279929578,
+        "grad_norm_min": 155.30067443847656,
+        "grad_norm_median": 148408848.0,
+        "grad_norm_max": 56924008448.0
+      },
+      "8": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.03521689440620999,
+        "mean_extrinsic_reward_last_10pct": 0.10861038032170295,
+        "grad_norm_min": 12.294443130493164,
+        "grad_norm_median": 597795520.0,
+        "grad_norm_max": 445053927424.0
+      },
+      "9": {
+        "n_updates": 7813,
+        "n_skipped_lines": 0,
+        "final_step": 1000064,
+        "mean_extrinsic_reward_first_10pct": 0.04955898387483995,
+        "mean_extrinsic_reward_last_10pct": 0.09955685819462227,
+        "grad_norm_min": 53.593482971191406,
+        "grad_norm_median": 228381184.0,
+        "grad_norm_max": 59008569344.0
+      }
+    }
+  }
+}
