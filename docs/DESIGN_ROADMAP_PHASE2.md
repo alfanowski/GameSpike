@@ -1411,6 +1411,35 @@ the control §2.2 C2 specifies.
 If they are identical, as expected, the redundancy is harmless: ten distinct untrained
 policies, each scored on both tasks, is exactly what `R_init(j)` needs.
 
+### 15.3.2 Sizing, measured on this machine before launch
+
+Two numbers decide whether ≈20M env steps fits the ≈1.5–2 h estimate, and both were measured
+rather than extrapolated from Phase 1's 1-1-only figures:
+
+| | 1-1 | 2-1 |
+|---|---|---|
+| wrapper boot cost per `reset()` | **26.2 ms** | **27.0 ms** |
+| random-policy episode length (mean / median) | 2393 / 3000 steps | **589 / 274 steps** |
+| bare-emulator throughput incl. resets | 4307 env-steps/s | 3627 env-steps/s |
+| reset overhead as a share of wall clock | 4.7% | **16.6%** |
+
+**2-1's episodes are roughly four times shorter**, so it pays `reset()` about 3.5× as often —
+the throughput risk worth checking before committing to a budget. It is not a blocker: the
+wrapper boot is cheap in absolute terms (27 ms), the penalty is ~16% of *bare emulation*, and
+in real training the model's forward and backward passes dominate (Phase 1 measured 1,303
+env-steps/s for the full loop against ~4,300 bare), so the reset share is diluted further.
+
+**Consequence for the design: no save-state caching of the boot.** It was the obvious
+optimisation and the probe proved it would be bit-identically safe (§14.2), but at 27 ms it
+buys almost nothing and would make Phase 2a's `reset()` semantics differ from Phase 1's for
+no measured gain. Rejected on the numbers.
+
+A second consequence worth stating: because 1-1's random-policy episodes mostly hit the
+3,000-step cap while 2-1's terminate at a median of 274, the **untrained anchors `R_init(j)`
+will differ substantially between the two tasks.** That is not a problem — it is precisely
+why §8.1 normalises per task rather than pooling — but it means the raw init returns will
+look lopsided and should not be read as one task being "broken".
+
 ### 15.4 Secondary, descriptive, and explicitly not a gate
 
 Every specialist is also scored on the **other** task, filling the off-diagonal of §8.2's
@@ -1429,11 +1458,18 @@ Stated now so they cannot be claimed later:
 - **This is not a continual-learning result.** No policy here is trained on more than one
   task. Forgetting is not measured, and cannot be: §8.3's `F` and `BWT` are undefined
   without a sequential condition.
-- **`R_spec(1-1)` is NOT comparable to Phase 1's published 1-1 returns.** Phase 2a boots
-  every task through PyBoy's wrapper (`start_game(world_level=…)`, §14.1) so both tasks share
-  one start mechanism, whereas Phase 1 booted from power-on through `envs/boot.py`. Both are
-  valid; they are not the same instrument, and no table should place their numbers side by
-  side without saying so.
+- **`R_spec(1-1)` is not the same instrument as Phase 1's published 1-1 returns — though the
+  gap is smaller than first assumed, and it was measured rather than left vague.** Phase 2a
+  boots every task through PyBoy's wrapper (`start_game(world_level=…)`, §14.1) so both tasks
+  share one start mechanism, whereas Phase 1 booted from power-on through `envs/boot.py`.
+  Compared directly at the start of 1-1, the two paths agree on **every** state field —
+  world/level, Mario's X and Y, lives, camera block, progress (242), scroll, powerup — **except
+  the level timer, which reads 396 under the power-on boot and 399 under the wrapper**, a
+  three-game-second offset from the different settle window. Short-horizon behaviour is
+  identical too: 240 frames of holding right yields progress 369, lives 2, y 134 from both.
+  The practical residue is that observation slot 5 (`timer/400`) sits a constant 0.0075
+  higher under the Phase 2a path. That is small, it is *not zero*, and no table should place
+  Phase 1's and Phase 2a's 1-1 numbers side by side without this sentence next to it.
 - **It says nothing about Kirby or about cross-title transfer.** That is Phase 2b, and
   §14.7 already raised its cost.
 
