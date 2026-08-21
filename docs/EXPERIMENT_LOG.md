@@ -3105,3 +3105,65 @@ verifies the LIF path is bit-identical to the one that produced them.
 
 This is a **pilot**, in the sense §6.4 of `RESULTS.md` uses the word and means it: a signal
 about whether a mechanism is worth a full matrix, not a measurement of whether it works.
+
+### 23.10 Corrections of record to §23, found while implementing it
+
+Appended, never edited in, per §11's rule. Both were found before any pilot number existed.
+
+**(a) §23.2's pseudocode contradicts §23.2's own `reset_delay=True` stipulation, and the
+stipulation is the binding clause.**
+
+§23.2 wrote the reset as
+
+```
+spk    = Theta(u_next - theta)
+u_next = u_next - theta * spk        # this step's spike
+```
+
+and *also* stipulated "snntorch's `reset_delay=True` semantics". Those are two different
+things. snntorch's `Leaky` at `reset_delay=True` — its default, and what the LIF arm has
+used since the beginning — computes the reset from the **previous** membrane, folds it into
+the same expression as the decay and the input, and returns the new membrane **un-reset**:
+
+```
+reset  = Theta(u_prev - theta).detach()
+u_next = beta * rot(u_prev, v_prev) + I - reset * theta
+spk    = Theta(u_next - theta)
+```
+
+The two orderings differ by one step of delay on every reset and are not bit-equal. The
+pseudocode block was a description of the mechanism; it was not a specification of the
+arithmetic, and where the two disagree **`reset_delay=True` wins** — because G0e-ii (that
+`omega = 0` reproduce the existing LIF arm *bit-exactly*) is the property that makes this a
+single-variable neuron swap at all, and it is unsatisfiable under the other ordering. Under
+snntorch's ordering it is satisfied: `torch.equal` on both spike trains and membrane traces
+over 256 steps at a 16.3% spike rate, with the quadrature state identically zero throughout.
+
+Recorded rather than silently fixed because a reader checking the implementation against the
+pre-registered equations would otherwise find a real discrepancy and have no way to know
+which side was intended.
+
+**(b) `dc_gain()` is a magnitude; the quantity that shifts the firing threshold is its real
+part, and they are not the same number.**
+
+§23.3's table is stated in terms of `|1/(1 - beta*exp(i*w))|`, which is the right measure of
+how much DC energy the two-dimensional state holds, and it is what G0a gates on. But spiking
+is thresholded on `u` alone, so the DC input `c_i = (W_in @ (W·mu + b))_i` shifts the firing
+threshold by the **real part**
+
+```
+offset_i = c_i * (1 - beta*cos(w_i)) / (1 - 2*beta*cos(w_i) + beta**2)
+```
+
+which reduces to `c_i / (1 - beta)` at `w_i = 0`, i.e. to exactly the LIF formula
+`analysis/reservoir_health.py` already uses. The real part is smaller than the magnitude
+everywhere except in the limit `w -> 0`, so the operationally relevant attenuation of the
+standing offset is **larger** than §23.3's table claims, not smaller.
+
+**This does not change any pre-registered band.** G0a (§23.5) stays stated on the magnitude,
+where it was fixed, and it is the weaker of the two tests — a construction that passes it on
+the magnitude passes it on the real part too. The refinement matters only for the induced
+offset-std column §23.8 requires to be reported next to `results_v2_health.txt`'s: that
+column must use the real-part factor per unit, or the resonate-and-fire arm's offset would be
+overstated by roughly the same factor H10 predicts it to fall by, and the arithmetic error
+would be indistinguishable from the result. Both quantities are reported.
