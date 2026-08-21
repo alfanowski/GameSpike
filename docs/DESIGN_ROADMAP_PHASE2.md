@@ -453,8 +453,8 @@ zero-fills the ones it does not — which is *already* the pattern in the codeba
 than omitted so the observation's shape never changes under a downstream model"
 (`envs/mario_land_env.py:147-149`).
 
-The existing twelve slots generalise better than they look, because eight of them are
-already about a *player in a scrolling game* rather than about Mario:
+The existing twelve slots generalise better than they look, because the nine that carry
+anything are already about a *player in a scrolling game* rather than about Mario:
 
 | slot | Phase 1 meaning | cross-task reading |
 |---|---|---|
@@ -466,7 +466,7 @@ already about a *player in a scrolling game* rather than about Mario:
 | 6 | lives / 9 | lives |
 | 7 | powerup state / 4 | player condition (Kirby: health; vehicle stages: probably nothing) |
 | 8 | score gained this step / 500 | score delta |
-| 9–11 | reserved zeros | reserved / task ID (§6.2) |
+| 9–11 | reserved zeros | **still reserved** for the enemy-relative features a later plan wires — *not* reused for the task ID, which is appended instead (§6.2) |
 
 **Rejected alternative: per-task input adapters** (a separate `nn.Linear` per game into a
 shared trunk). It is what a lot of multi-task work does, and it is rejected here because it
@@ -489,9 +489,15 @@ reason as adapters. This is a **pre-registerable measurement**, not a judgement 
 pre-registered ablation.**
 
 Cost at K=2: `embedding` grows from 12×32+32 = 416 to 14×32+32 = 480 parameters. **+64
-trainable parameters, +0.048%** against a 132,715-parameter budget — three orders of
-magnitude inside `tests/test_parameter_parity.py`'s ±10% band, and small enough that the
-comparison is not confounded by capacity.
+trainable parameters, +0.048%** against a 132,715-parameter budget — more than two orders of
+magnitude inside `tests/test_parameter_parity.py`'s ±10% band — the band is ~207× wider than
+the change — and small enough that the comparison cannot be confounded by capacity.
+
+**Appended, not squatted.** The task ID goes on the *end* of the vector, taking
+`obs_dim` from 12 to 12 + *K*. It deliberately does **not** occupy the reserved slots 9–11,
+which belong to the enemy-relative features `envs/mario_land_env.py:147-149` promises to a
+later plan; quietly repurposing them would make that plan's observation silently incompatible
+with every Phase 2 checkpoint.
 
 Why an ablation rather than a decision, and why the *unconditioned* variant is the more
 interesting one: the unconditioned setting is **task-agnostic continual RL**, formalised by
@@ -602,6 +608,29 @@ compute.
 
 Plus the Q3 ablation (each of INT and SEQ, with and without the one-hot task ID) and the
 conditional Q4 mitigation arm.
+
+Two clarifications the table cannot carry:
+
+- **SPEC-2N is run for the *first* task of the sequence only.** Its job is to answer "would
+  another *N* steps on task A have helped anyway?", which is only a confound for the task
+  whose retention is being measured. Running it for every task would double a control that
+  only one task needs.
+- **INIT is per task**, because §8.1's lower anchor `R_init(j)` is a per-task quantity. It
+  costs no env steps.
+
+### 7.1.1 Task order is a variable, and running only one order is a weaker result
+
+**Decision: run SEQ in both orders — A→B *and* B→A — and report forgetting for both.**
+
+Order effects are real in continual RL, and a single ordering cannot separate *"training on
+B destroys A"* from *"A is simply the more fragile task"*. The Phase 1 discipline of
+symmetric treatment (`--seed` drives both arms symmetrically; the untrained arms were shown
+statistically indistinguishable before any trained claim was made) points the same way here:
+the two tasks should be treated symmetrically unless there is a reason not to.
+
+The cost is 10 more runs at 2*N*, i.e. +20M env steps, ≈1.5 h at the measured aggregate
+(§10). **If compute has to be cut, this is the first thing to cut** — and cutting it must
+then be stated as a limitation, not omitted.
 
 ### 7.2 Switching granularity for INT
 
@@ -729,8 +758,23 @@ consequential change to the evaluation matrix driver (§9, item 6).
 **Continual evaluation, not just stage boundaries.** CORA's central methodological point is
 that a single end-of-training snapshot hides transient forgetting and recovery. `train.py`
 already writes a checkpoint every `--checkpoint-every` steps, so the *trace* — normalized
-score on every task at every checkpoint — is available for free and should be plotted, not
-just the four corners of a 2×2 matrix.
+score on every task at every checkpoint — is available and should be plotted, not just the
+four corners of a 2×2 matrix.
+
+**It is available, but not free, so evaluation runs at two tiers.** Scoring every checkpoint
+on every task at Phase 1's full protocol (30 episodes × two recurrent-state regimes) is on
+the order of 1,800 evaluations and would cost more wall clock than the training it measures
+(§10). The split:
+
+- **Stage boundaries — the full Phase 1 protocol.** 30 episodes, both `continuous` and
+  `reset128`. These fill `R[i, j]` and every statistic in §8.3 and §8.4 is computed from
+  them. This tier is what the headline rests on.
+- **The trace — a cheaper instrument, labelled as one.** 10 episodes, `reset128` only (the
+  regime training actually used). Enough to see the *shape* of forgetting and recovery
+  between boundaries; **not** enough to support an arm comparison, and it must never be used
+  for one. This is the same distinction `training/evaluate.py`'s own "WHAT THIS HARNESS
+  CANNOT TELL YOU" section already draws between a per-checkpoint instrument and the
+  experiment.
 
 ### 8.3 Forgetting, backward transfer, forward transfer — the exact definitions
 
@@ -764,11 +808,18 @@ policy trained only on Mario 1-1 do better than an untrained one on 2-1, before 
 number that answers "how good is the final agent, across everything it was supposed to have
 learned".
 
-**Note for the T = 2 case, stated so nobody re-derives it later.** With two tasks and
-evaluation only at stage boundaries, `F = −BWT` exactly. They diverge only once the
-continual-evaluation trace of §8.2 is used, because then a task's peak can occur strictly
-between boundaries. **Pre-register both and compute both from the trace**, so the stricter
-convention is available and the weaker one cannot be quietly substituted.
+**Note for the T = 2 case, stated so nobody re-derives it later.** Every statistic above is
+computed from the **stage-boundary tier** of §8.2 — the full-protocol evaluations — and
+never from the cheaper trace, so the instrument is the same one Phase 1 used. With two tasks
+and boundary-only evaluation, **`F = −BWT` exactly**; they are not two independent findings
+and must not be reported as if they were.
+
+They can only diverge if a task's peak occurs strictly *between* boundaries. The trace exists
+to reveal exactly that, and its role here is bounded: **if the trace shows an intermediate
+peak above `R[i, i]`, that is reported as a caveat on `F` — never silently folded into it.**
+Mixing a 10-episode instrument into a statistic computed from 30-episode measurements would
+be precisely the kind of quiet instrument-switch `EXPERIMENT_LOG.md` §17.11 already had to
+rule out once.
 
 ### 8.4 The declared headline
 
@@ -865,20 +916,28 @@ All figures from this project's own measurements, not estimates.
 | condition | runs | steps/run | env steps |
 |---|---|---|---|
 | SPEC-A, SPEC-B | 2 × 10 | 1M | 20M |
-| SPEC-2N (task A only) | 1 × 10 | 2M | 20M |
-| INT (unconditioned) | 10 | 2M | 20M |
-| SEQ (unconditioned) | 10 | 2M | 20M |
-| INT + SEQ (task-conditioned, Q3) | 20 | 2M | 40M |
+| SPEC-2N (first task only, §7.1) | 10 | 2M | 20M |
+| INT, unconditioned | 10 | 2M | 20M |
+| SEQ A→B, unconditioned | 10 | 2M | 20M |
+| SEQ B→A, unconditioned (§7.1.1) | 10 | 2M | 20M |
+| INT + SEQ A→B + SEQ B→A, task-conditioned (Q3) | 30 | 2M | 60M |
 | INIT | 2 × 10 | 0 | ~0 |
-| **total** | **~80 runs** | | **~120M** |
+| **total** | **90 training runs** (+20 zero-step INIT) | | **160M** |
 
-At the measured 10-way aggregate of ≈3,660 env-steps/s that is **≈9 hours of wall clock** —
-one unattended overnight run, the same shape as Phase 1 v2's. **A three-task testbed
-(OPEN-3) is roughly 1.6× that**, i.e. still one long night rather than two.
+At the measured 10-way aggregate of ≈3,660 env-steps/s that is **≈12 hours of wall clock** —
+one unattended overnight run, the same shape as Phase 1 v2's, which itself ran 23:55 → 04:22
+including evaluation and analysis. **Two levers if that is too long**: dropping the reverse
+order (§7.1.1) takes it to ≈9 h, and dropping the Q3 ablation takes it to ≈7.5 h. **A
+three-task testbed (OPEN-3) is roughly 1.6× the full figure**, i.e. two nights rather than
+one, which is the real argument for starting with two.
 
-Evaluation grows faster than training does, because §8.2 requires every checkpoint to be
-scored on every task: on the order of 300–500 evaluations against v2's 120. At v2's measured
-rate that is still **under two hours**.
+**Evaluation grows faster than training does**, because §8.2 requires every checkpoint to be
+scored on every task. Counted at two tiers (§8.2): the stage-boundary matrix is ~360
+evaluations at the full Phase 1 protocol (30 episodes, both regimes), and the
+continual-evaluation trace is ~1,800 cheaper evaluations (10 episodes, `reset128` only).
+Against v2's measured 120 full evaluations in 21 minutes at `--jobs 8`, that is **roughly 3
+hours** — not the "under two" a first estimate suggested, and worth knowing before the
+pipeline is chained end-to-end.
 
 **This is affordable, and that is a design input, not a footnote.** It is why 10 seeds per
 condition (Phase 1's *n*, above the 3–5 common in published deep RL, below Continual World's
