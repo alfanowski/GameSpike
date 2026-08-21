@@ -1,8 +1,10 @@
 # Roadmap Phase 2 — Multi-Game Generalization on the GRU Architecture
 
-Status: **design proposal, nothing implemented, no training run.** The testbed-viability
-probe of §13 has been executed (§14) — seconds of emulation, no training, no checkpoints.
-No training job has been started under this document and none should be until it is reviewed.
+Status: **design proposal under review.** The testbed-viability probe of §13 has been
+executed (§14). One bounded training step — the two single-task specialists and their
+untrained anchors, ≈20M env steps — is **authorised and pre-registered in §15**; nothing
+else in §7.1's table is. The full matrix of §10 remains a proposal and must not be started
+without the project owner's decision.
 Date: 2026-08-21
 Author: Andrea Alfano ("Alfanowski"), with research support from Claude (Opus 5)
 Scope: `docs/DESIGN.md` §1.1 **Roadmap Phase 2** — multi-game generalization within Game
@@ -1073,8 +1075,13 @@ existing documents; everything not listed here is decided above with its rationa
 > **EXECUTED 2026-08-21 — results in §14.** The probe specified below was authorised and has
 > been run: `scripts/phase2_viability_probe.py`, raw output at `results_phase2_probe.json`,
 > ~6 seconds of emulation, no training and no checkpoints. The specification is kept here
-> unedited so §14's results can be read against what was actually asked for. **Nothing beyond
-> it has been started.**
+> unedited so §14's results can be read against what was actually asked for.
+>
+> **Superseded as "the next step" by §15.** The probe came back viable, and one bounded
+> training step — SPEC-A and SPEC-B, the specialist references — has since been authorised
+> and pre-registered. It is a strict subset of §7.1, it is the denominator every later metric
+> divides by, and it carries its own pre-registered go/no-go. Nothing beyond *it* has been
+> started.
 
 **Not** "start training". The bounded next step, if this document is accepted, is:
 
@@ -1316,7 +1323,106 @@ None of them changes the sequencing in §4.2.
 
 ---
 
-## 15. Out of scope for this document
+## 15. Pre-registration: SPEC-A / SPEC-B, the specialist reference runs
+
+**Written 2026-08-21, before any Phase 2a training run existed and before any number was
+produced.** This project pre-registers because `EXPERIMENT_LOG.md` §17.9 requires the shape
+of a write-up to be fixed before the numbers, so the shape cannot be chosen to flatter them.
+
+### 15.1 What is being run, and what is deliberately not
+
+Authorised scope: **SPEC-A and SPEC-B only** — the two single-task specialists of §7.1 —
+plus their zero-step `INIT` anchors. **≈20M env steps.** Nothing else in §7.1's table is
+authorised: no INT, no SEQ, no Q3 ablation, no mitigation arm.
+
+| | value |
+|---|---|
+| arm | `baseline` (the GRU, `models/policy_value_gru.py`) |
+| tasks | `1-1` and `2-1` (§12, OPEN-3) |
+| seeds per task | 10, independent (0–9) |
+| env steps per run | 1,000,064 |
+| INIT anchors | the same grid at `--steps 0` |
+| optimizer / clipping / init | **inherited from Phase 1 v2 unchanged**: Adam `lr=3e-4`, `--grad-clip-mode per-group`, `--embed-init-mode centered`, `--embed-scale 3.0` |
+| centring constant | `OBS_MEAN_PHASE2A`, the **mixture** mean over both tasks (§6.1) |
+| action set | Phase 1's ten (§12, OPEN-3 — no vehicle stage, so no widening) |
+| evaluation | 30 episodes, eval seed 0, both `continuous` and `reset128` |
+| checkpoint selections | `final` and `init` only — `best` is selected on training reward and adds nothing to a reference measurement |
+| unit of analysis | the training seed, never the episode (`RESULTS.md` §2.4) |
+
+**No hyperparameter will be tuned in response to these results.** The shared set is what
+makes the later comparisons fair, and it was chosen for Phase 1's architecture and never
+tuned for 2-1 either. If 2-1 needs different hyperparameters, that is a finding to report,
+not a knob to turn.
+
+### 15.2 Why these runs exist
+
+They are **control C1 and control C2** (§2.2), and they are the denominator and the zero of
+§8.1's normalized score:
+
+> `norm(j, s) = ( R(j, s) − R_init(j) ) / ( R_spec(j) − R_init(j) )`
+
+Nothing else in Phase 2a is interpretable until `R_spec(j)` and `R_init(j)` exist for both
+tasks. Running them first is not a warm-up; it is the measurement every later number divides
+by.
+
+### 15.3 Pre-registered go/no-go: is 2-1 learnable at this budget?
+
+`R_spec − R_init` is a **denominator**. If a task's specialist barely beats its untrained
+anchor, that denominator approaches zero and every normalized score built on it becomes
+unstable — a *mathematical* failure of the metric, not merely a weak result. So the gate is
+declared now, in advance, and it binds:
+
+> **GO for task *j* requires BOTH:**
+> 1. the specialist beats its own untrained anchor on `mean_extrinsic_return`, **exact
+>    two-sided permutation test, p < 0.05**, n = 10 vs n = 10 seeds; **and**
+> 2. the effect is large enough to divide by: **Cohen's *d* ≥ 1.0** between the specialist
+>    and init seed-level means.
+>
+> **Phase 2a's full matrix (§10) proceeds only if BOTH tasks pass.**
+
+Threshold 2 is set at *d* ≥ 1.0 because Phase 1's own measured effects sat at |*d*| between
+1.27 and 2.22 (`RESULTS.md` §13), so 1.0 is a floor in a range this project has already
+demonstrated it can resolve at n = 10 — not a number invented to be passable.
+
+**What each outcome means, committed in advance:**
+
+- **Both pass.** The testbed is viable; the §10 matrix is worth proposing. *Proposing, not
+  starting.*
+- **1-1 passes, 2-1 fails.** 2-1 is not learnable at 1M steps with this architecture and
+  hyperparameter set. The cross-level testbed needs a different second task, or a longer
+  budget — and either is a **new decision, not an adjustment**. Report and stop.
+- **Both fail.** Almost certainly a plumbing fault rather than a scientific result, given
+  Phase 1 trained successfully on 1-1. Debug before drawing any conclusion.
+
+### 15.4 Secondary, descriptive, and explicitly not a gate
+
+Every specialist is also scored on the **other** task, filling the off-diagonal of §8.2's
+performance matrix. Under §8.1's normalization this is exactly the forward-transfer term
+`FWT` of §8.3: does a policy trained only on 1-1 beat an untrained one on 2-1, having never
+seen it?
+
+This is **reported descriptively and gates nothing.** It costs no extra training — the same
+checkpoints, evaluated twice — and it is the first genuinely novel number this phase
+produces.
+
+### 15.5 Three things these runs will NOT tell you
+
+Stated now so they cannot be claimed later:
+
+- **This is not a continual-learning result.** No policy here is trained on more than one
+  task. Forgetting is not measured, and cannot be: §8.3's `F` and `BWT` are undefined
+  without a sequential condition.
+- **`R_spec(1-1)` is NOT comparable to Phase 1's published 1-1 returns.** Phase 2a boots
+  every task through PyBoy's wrapper (`start_game(world_level=…)`, §14.1) so both tasks share
+  one start mechanism, whereas Phase 1 booted from power-on through `envs/boot.py`. Both are
+  valid; they are not the same instrument, and no table should place their numbers side by
+  side without saying so.
+- **It says nothing about Kirby or about cross-title transfer.** That is Phase 2b, and
+  §14.7 already raised its cost.
+
+---
+
+## 16. Out of scope for this document
 
 - **Roadmap Phase 3 (GBA) and Phase 4 (Fire Red).** Not abandoned — `DESIGN.md` §1.1. The
   fourteen GBA ROMs on disk are not a shortcut to multi-game work: using them would change
