@@ -246,14 +246,14 @@ def _silent_fraction(model, obs):
     That limitation is real and is recorded in docs/EXPERIMENT_LOG.md next to the
     numbers rather than hidden behind this helper.
     """
-    mem, spk, _window = model.init_state(1, torch.device("cpu"))
+    mem, imem, spk, _window = model.init_state(1, torch.device("cpu"))
     ever = torch.zeros(model.reservoir_size, dtype=torch.bool)
     always = torch.ones(model.reservoir_size, dtype=torch.bool)
     total_rate = 0.0
     with torch.no_grad():
         for t in range(obs.shape[0]):
             emb = model.embedding(obs[t:t + 1])
-            spk, mem = model.reservoir.step(emb, mem, spk)
+            spk, mem, imem = model.reservoir.step(emb, mem, spk, imem)
             fired = spk[0] > 0
             ever |= fired
             always &= fired
@@ -361,9 +361,9 @@ def test_frozen_reservoir_invariant_holds_under_both_init_modes(embed_init_mode)
                            embed_scale=3.0)
     model.assert_reservoir_frozen()
     obs = torch.zeros(1, OBS_DIM)
-    mem, spk, window = model.init_state(1, torch.device("cpu"))
+    mem, imem, spk, window = model.init_state(1, torch.device("cpu"))
     for _ in range(3):
-        _logits, _value, mem, spk, window = model(obs, mem, spk, window)
+        _logits, _value, mem, imem, spk, window = model(obs, mem, imem, spk, window)
     model.assert_reservoir_frozen()   # a forward pass must not have moved anything
 
 

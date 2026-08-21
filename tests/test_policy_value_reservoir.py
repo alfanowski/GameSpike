@@ -13,12 +13,13 @@ def _small_model():
 def test_forward_shapes_and_state_threading():
     B = 3
     model = _small_model()
-    mem, spk, window = model.init_state(B, device=torch.device("cpu"))
+    mem, imem, spk, window = model.init_state(B, device=torch.device("cpu"))
     obs = torch.randn(B, 12)
-    logits, value, mem2, spk2, window2 = model(obs, mem, spk, window)
+    logits, value, mem2, imem2, spk2, window2 = model(obs, mem, imem, spk, window)
     assert logits.shape == (B, 10)
     assert value.shape == (B,)
     assert mem2.shape == (B, 256)
+    assert imem2.shape == (B, 256)
     assert spk2.shape == (B, 256)
     assert window2.shape[0] == B and window2.shape[2] == 256
     assert window2.shape[1] <= model.context_len
@@ -27,10 +28,10 @@ def test_forward_shapes_and_state_threading():
 def test_window_grows_then_caps_at_context_len():
     B = 1
     model = _small_model()
-    mem, spk, window = model.init_state(B, device=torch.device("cpu"))
+    mem, imem, spk, window = model.init_state(B, device=torch.device("cpu"))
     obs = torch.randn(B, 12)
     for step in range(model.context_len + 5):
-        logits, value, mem, spk, window = model(obs, mem, spk, window)
+        logits, value, mem, imem, spk, window = model(obs, mem, imem, spk, window)
         assert window.shape[1] == min(step + 1, model.context_len)
 
 
@@ -38,9 +39,9 @@ def test_reservoir_stays_frozen_across_a_training_step():
     model = _small_model()
     w_in_before = model.reservoir.W_in.clone()
     opt = torch.optim.Adam(model.trainable_parameters(), lr=1e-2)
-    mem, spk, window = model.init_state(2, device=torch.device("cpu"))
+    mem, imem, spk, window = model.init_state(2, device=torch.device("cpu"))
     obs = torch.randn(2, 12)
-    logits, value, mem, spk, window = model(obs, mem, spk, window)
+    logits, value, mem, imem, spk, window = model(obs, mem, imem, spk, window)
     loss = logits.sum() + value.sum()
     opt.zero_grad()
     loss.backward()
@@ -76,9 +77,9 @@ def test_frozen_reservoir_tripwire_actually_catches_a_violation():
     w_in_before = model.reservoir.W_in.detach().clone()
 
     opt = torch.optim.Adam(model.trainable_parameters(), lr=1e-2)
-    mem, spk, window = model.init_state(2, device=torch.device("cpu"))
+    mem, imem, spk, window = model.init_state(2, device=torch.device("cpu"))
     obs = torch.randn(2, 12)
-    logits, value, mem, spk, window = model(obs, mem, spk, window)
+    logits, value, mem, imem, spk, window = model(obs, mem, imem, spk, window)
     opt.zero_grad()
     (logits.sum() + value.sum()).backward()
     opt.step()

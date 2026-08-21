@@ -135,10 +135,11 @@ def test_a_profiled_reservoir_still_steps():
     res = SpikingReservoir(seed=0, tt_bond_decay=0.5, **SMALL)
     B, N = 4, SMALL["reservoir_size"]
     mem, spk = torch.zeros(B, N), torch.zeros(B, N)
+    imem = torch.zeros(B, N)
     torch.manual_seed(0)
     x = torch.randn(B, SMALL["input_dim"])
     for _ in range(5):
-        spk, mem = res.step(x, mem, spk)
+        spk, mem, imem = res.step(x, mem, spk, imem)
     assert spk.shape == (B, N) and torch.isfinite(mem).all()
     # and the TT matvec still equals the materialised operator it stands for
     v = torch.randn(2, N)

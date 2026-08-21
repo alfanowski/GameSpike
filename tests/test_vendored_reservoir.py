@@ -17,9 +17,12 @@ def test_reservoir_step_shapes_and_dtype():
     mem = torch.zeros(B, N)
     spk = torch.zeros(B, N)
     x_t = torch.randn(B, input_dim)
-    spk_next, mem_next = res.step(x_t, mem, spk)
+    # `imem` (the resonate-and-fire quadrature companion, §23.2) is threaded in both
+    # neuron models and defaults to zeros when omitted; in LIF mode nothing reads it.
+    spk_next, mem_next, imem_next = res.step(x_t, mem, spk)
     assert spk_next.shape == (B, N)
     assert mem_next.shape == (B, N)
+    assert imem_next.shape == (B, N)
     feat = res.readout_feature(spk_next, mem_next)
     assert feat.shape == (B, N)
 

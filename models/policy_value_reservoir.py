@@ -12,6 +12,14 @@ from models.embedding_init import EMBED_INIT_MODES, init_embedding_bias_
 # at construction to `(B, N)` after the first call. This codebase never reads it --
 # `mem` is threaded explicitly through `SpikingReservoir.step` -- so including it
 # would make the tripwire fire on every normal forward pass.
+#
+# The resonate-and-fire cell (docs/EXPERIMENT_LOG.md §23) deliberately adds NOTHING
+# to this set: it holds no state of its own, since (u, v) are threaded by the caller
+# exactly as `mem`/`spk` already are. Its buffers -- `rf.omega` and the derived
+# `rf.cos_omega`/`rf.sin_omega`, plus the beta/threshold constants -- are frozen
+# weights and are covered by the tripwire with no exception, which is what §23.5's
+# G0e requires of `omega`. This list staying at one entry is the point; every entry
+# in it is a hole in the invariant.
 TRANSIENT_RESERVOIR_BUFFERS = frozenset({"lif.mem"})
 
 
@@ -25,7 +33,8 @@ class PolicyValueReservoir(nn.Module):
     def __init__(self, obs_dim=12, embed_dim=32, reservoir_size=8192, n_actions=10,
                  use_tensor_train=True, tt_rank=8, tt_n_cores=4, context_len=64, seed=0,
                  d_model=16, n_layers=2, n_heads=4,
-                 embed_init_mode="legacy", embed_scale=1.0, obs_mean=None):
+                 embed_init_mode="legacy", embed_scale=1.0, obs_mean=None,
+                 neuron_model="lif", rf_period_min=2.0, rf_period_max=32.0):
         # d_model=16 (not ActorCriticReadout's own 64 default) is REQUIRED by the
         # matched-parameter-budget rule (spec §5): this arm's trainable count must
         # land within 10% of the GRU baseline's. The readout's in_proj maps the full
@@ -97,9 +106,17 @@ class PolicyValueReservoir(nn.Module):
         # branch is shared with the baseline arm verbatim.
         init_embedding_bias_(self.embedding, embed_init_mode, obs_mean,
                              legacy_bias_init=nn.init.zeros_)
+        # neuron_model defaults to "lif", which is bit-identical to the construction
+        # that produced the published v2 runs -- those runs are the resonate-and-fire
+        # pilot's experimental control (docs/EXPERIMENT_LOG.md §23.5, G0e-i), so the
+        # default has to stay the historical path down to the RNG stream, not merely
+        # "equivalent". Pinned in tests/test_resonate_and_fire.py against 708b32d.
+        self.neuron_model = neuron_model
         self.reservoir = SpikingReservoir(
             reservoir_size=reservoir_size, input_dim=embed_dim, seed=seed,
             use_tensor_train=use_tensor_train, tt_rank=tt_rank, tt_n_cores=tt_n_cores,
+            neuron_model=neuron_model, rf_period_min=rf_period_min,
+            rf_period_max=rf_period_max,
         )
         self.readout = ActorCriticReadout(
             reservoir_size=reservoir_size, n_actions=n_actions, d_model=d_model,
@@ -110,20 +127,32 @@ class PolicyValueReservoir(nn.Module):
         self.snapshot_frozen_weights()
 
     def init_state(self, batch_size: int, device: torch.device):
+        """The recurrent state: (mem, imem, spk, window).
+
+        FOUR elements in BOTH neuron models, deliberately. `imem` is the
+        resonate-and-fire quadrature companion (§23.2's `v`, with `mem` as `u`); in
+        LIF mode it is a zeros tensor that nothing ever reads. Making the arity
+        depend on `neuron_model` would push the branch into every caller that
+        threads this state -- the rollout collector, the gradient replay, the
+        evaluator -- and those all unpack it positionally, so the failure mode is a
+        component silently dropped on one arm rather than an error on either.
+        """
         mem = torch.zeros(batch_size, self.reservoir_size, device=device)
+        imem = torch.zeros(batch_size, self.reservoir_size, device=device)
         spk = torch.zeros(batch_size, self.reservoir_size, device=device)
         window = torch.zeros(batch_size, 0, self.reservoir_size, device=device)
-        return mem, spk, window
+        return mem, imem, spk, window
 
-    def forward(self, obs: torch.Tensor, mem, spk, window):
+    def forward(self, obs: torch.Tensor, mem, imem, spk, window):
         emb = self.embedding(obs)                       # (B, embed_dim), trainable
-        spk_next, mem_next = self.reservoir.step(emb, mem, spk)  # frozen, surrogate grad to emb
+        # frozen reservoir; surrogate gradient still reaches emb through it.
+        spk_next, mem_next, imem_next = self.reservoir.step(emb, mem, spk, imem)
         feat = self.reservoir.readout_feature(spk_next, mem_next).unsqueeze(1)  # (B, 1, N)
         window_next = torch.cat([window, feat], dim=1)
         if window_next.shape[1] > self.context_len:
             window_next = window_next[:, -self.context_len:, :]
         action_logits, value = self.readout(window_next)
-        return action_logits, value, mem_next, spk_next, window_next
+        return action_logits, value, mem_next, imem_next, spk_next, window_next
 
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
