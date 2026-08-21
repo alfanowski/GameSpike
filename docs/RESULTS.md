@@ -1326,3 +1326,92 @@ left open.
   the seed.
 - **The final checkpoint is `step_1000064.pt`, not `step_1000000.pt`.** Globbing for the
   round number matches nothing.
+
+---
+
+## 24. Correction of record — the fixture §19 measures against is not the collection `OBS_MEAN` was fitted to
+
+**Appended beneath v2, never edited into it**, on the same rule v2 was appended beneath v1
+and `EXPERIMENT_LOG.md` §11 applies to itself: **§19's numbers stand exactly as published.**
+Nothing below is a retraction, and no figure in this document is changed.
+
+Found on 2026-08-21 during the pre-flight of the resonate-and-fire pilot
+(`EXPERIMENT_LOG.md` §23.13), while measuring the observation's spectrum for an unrelated
+reason — not by re-reading §19. Recorded here rather than only in the ledger because it is a
+caveat on a **published, merged** section of this document, and a reader of §19 alone would
+otherwise have no way to know it.
+
+### 24.1 What was found
+
+**v1 §7.1 was computed on one 6,000-step collection; §19 is measured against a different
+one.**
+
+- v1 §7.1 publishes `‖E[obs]‖² = 1.331336`. That is **exactly** `‖OBS_MEAN‖²`, the constant
+  in `envs.mario_land_env` — so §7.1's figures come from the collection `OBS_MEAN` was
+  fitted to.
+- `tests/data/real_obs_6000.npy` — the committed fixture **every silent-fraction, spike-rate
+  and offset number in §19 is measured against** — is a different 6,000-step collection of
+  the same construction. On it, `E‖obs‖² = 1.548647` against §7.1's published **1.713384**, a
+  **9.6%** difference, and the per-dimension means differ from `OBS_MEAN` by up to
+  **0.081922** (slot 5, the level timer; slot 7 differs by 0.074667).
+- **`--embed-init-mode centered` subtracts the fixed constant `OBS_MEAN`.** v1 §7.2 proved
+  that this is *algebraically exact* — `W(obs − μ) ≡ W·obs + (−W·μ)` — and it is, **on the
+  collection `OBS_MEAN` came from**: the induced per-unit membrane offset there measures
+  **exactly 0.000000**. On the committed fixture it does not. Mean over seeds 0-2:
+
+| centred on | induced offset std at init (seeds 0, 1, 2) | mean |
+|---|---|---|
+| `OBS_MEAN`, i.e. the shipped `centered` init, measured on the fixture | 0.298642, 0.334427, 0.264176 | **0.299082** |
+| the fixture's own mean (an exactly-matched centring) | 0.000000, 0.000000, 0.000000 | **0.000000** |
+
+against a firing threshold of **1.0**. The residual DC left by the shipped centring is
+**3.5208%** of the reservoir's post-centring input energy, where an exactly-matched centring
+leaves zero.
+
+### 24.2 What it changes
+
+**§19's early trajectory is contaminated, and the contamination is not small there.** §19's
+first measured checkpoint (100,096 steps, seed 0) reports an induced offset std of
+**0.5037**. About **59%** of that is fixture mismatch present at initialisation, **not**
+training drift.
+
+Consequently the constraint §19 honours verbatim from `EXPERIMENT_LOG.md` §15.4 — *"centring
+holds the reservoir near-fully active for roughly the first 100k steps"* — is measured on a
+fixture where the centring was never exact. **The reservoir was healthier at initialisation
+on its own observation distribution than §19's first rows show.** That reads in the
+reservoir's favour, not against it, which is the direction that should be disclosed loudest.
+
+### 24.3 What it does not change
+
+- **Every verdict in §19, because every verdict is taken at the final checkpoint.** At
+  1,000,064 steps the induced offset std is 4.2223 and the fixture mismatch accounts for
+  roughly **7%** of it.
+- **A7 and A9.** A7 (0.1636% dead against `<2%` confirms) and A9 (32.1606% silent against
+  `<40%` confirms) are both final-checkpoint quantities, both far from their pre-registered
+  bands' edges. Neither verdict moves.
+- **The runaway itself, which is the finding §19 exists to report.** 0.299 → 4.222 is still a
+  factor of **14**, the spike rate still ends at **0.194** against a documented ~2% band, and
+  `EXPERIMENT_LOG.md` §21.5's *"most concrete open architectural question this project has"*
+  stands unchanged.
+- **Every task-performance number in this document** — §13, §15, §17, §18 and their v1
+  counterparts. Those come from `results_v2/` and `results/` and never touch this fixture.
+- **v1 §7.1's own conclusion.** The DC fraction reproduces on the fixture at **77.5630%**
+  against the published **77.70%** — 0.14 percentage points apart. *The observation is
+  DC-dominated* is robust to which collection it is measured on; only the exactness of the
+  correction is not.
+
+### 24.4 Relationship to the caveat already disclosed
+
+This **compounds** §21's fixture caveat (`EXPERIMENT_LOG.md` §14.13) rather than replacing
+it. That one says the fixture was collected under **v1** policies, so holding it fixed is the
+right controlled comparison for *"did the trained embedding drift away from its centring"*
+but is not what a v2 policy experiences in situ. This one is narrower and sharper: **the
+fixture is not even the collection the centring constant was fitted to, so `centered` is
+approximate on it by construction, before any policy drift enters.** Both caveats apply to
+the same numbers and neither subsumes the other.
+
+**No remedy is applied here and §19 is not re-measured.** The obvious ones — recollect the
+fixture from the collection `OBS_MEAN` was fitted to, refit `OBS_MEAN` on the committed
+fixture, or report offsets relative to an exactly-matched centring — each change what a
+published number means, and choosing between them is not a correction but a decision. It is
+left to the project owner, on this evidence.

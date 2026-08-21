@@ -2,6 +2,102 @@ import math
 import torch
 import torch.nn as nn
 import snntorch as snn
+from snntorch import surrogate
+
+NEURON_MODELS = ("lif", "rf")
+
+
+class ResonateFireCell(nn.Module):
+    """Discrete-time resonate-and-fire neuron, exactly as pre-registered in
+    docs/EXPERIMENT_LOG.md §23.2. One complex pole per unit, carried in REAL
+    2-vector form (u, v) so no complex autograd is involved:
+
+        u_next = beta * (cos(w_i)*u - sin(w_i)*v) + I
+        v_next = beta * (sin(w_i)*u + cos(w_i)*v)
+
+    `u` is the membrane -- it receives the input current and it is the only
+    component the threshold and the reset touch. `v` is its quadrature companion:
+    no input, no threshold, no reset. |lambda| = beta is IDENTICAL to the LIF
+    path's beta, so the envelope decay -- and hence the memory horizon -- is
+    unchanged by construction; only the rotation is added (§23.2).
+
+    LIF IS THE omega == 0 POINT OF THIS FAMILY, BIT FOR BIT, AND THAT IS A TEST
+    (§23.5 G0e-ii), NOT A REMARK. At w == 0: cos = 1.0 and sin = 0.0 exactly in
+    IEEE-754, `1.0*u` is exact, `0.0*v` is +0.0 for finite v, `u - 0.0` is exact,
+    so the update collapses to `beta*u + I` -- the literal `snn.Leaky` arithmetic.
+    That only holds if the expression is evaluated in snntorch's order, which is
+    why the code below is written the way it is rather than the algebraically
+    equivalent `beta*cos*u - beta*sin*v + I`.
+
+    RESET SEMANTICS ARE SNNTORCH'S, NOT THE PSEUDOCODE'S. §23.2 fixes
+    `reset_delay=True`, and snntorch's `Leaky.forward` implements that as: the
+    reset signal is derived from the PREVIOUS step's membrane, BEFORE this step's
+    threshold comparison, and subtracted inside the state update --
+
+        reset   = Theta(u_prev - theta).detach()
+        u_next  = beta*rot(u_prev, v_prev) + I - reset*theta
+        spk     = Theta(u_next - theta)                    # returned un-reset
+
+    -- so the membrane handed back to the caller has NOT yet had this step's
+    spike subtracted; that happens one step later. §23.2's pseudocode describes
+    the same mechanism with the subtraction written at the end of the step, which
+    is `reset_delay=False`. snntorch's arithmetic is the specification here
+    because G0e-ii demands bit-exactness against `snn.Leaky`, and the two
+    orderings are NOT bit-equal (they differ by one step of delay on every reset).
+
+    beta and theta are the LIF path's own constants, taken from the same source
+    (`SpikingReservoir.__init__`'s `beta` argument and `snn.Leaky`'s threshold),
+    and the surrogate gradient is snntorch's default -- `surrogate.atan()`, alpha
+    2.0, which is what `snn.Leaky()` installs when constructed with no
+    `spike_grad=` argument (snntorch/_neurons/neurons.py: `self.spike_grad =
+    atan()`). Imported rather than reimplemented so it cannot silently drift.
+
+    Holds NO state: (u, v) are threaded explicitly by the caller, exactly as
+    `mem`/`spk` already are. That is deliberate -- snntorch's `Leaky` keeps a
+    transient `mem` buffer that the frozen-reservoir tripwire has to special-case
+    (models/policy_value_reservoir.py's TRANSIENT_RESERVOIR_BUFFERS); this cell
+    adds no such exception, every buffer it owns is a frozen constant.
+    """
+
+    def __init__(self, omega, beta=0.9, threshold=1.0, spike_grad=None):
+        super().__init__()
+        if not isinstance(omega, torch.Tensor):
+            omega = torch.as_tensor(omega)
+        omega = omega.detach().clone().to(torch.get_default_dtype())
+        # Frequencies and their cosines/sines are frozen constants: registered as
+        # buffers so they move with .to()/.cuda() and are covered, unexceptioned,
+        # by PolicyValueReservoir.assert_reservoir_frozen().
+        self.register_buffer("omega", omega)
+        self.register_buffer("cos_omega", torch.cos(omega))
+        self.register_buffer("sin_omega", torch.sin(omega))
+        # Same construction snntorch uses for its own beta/threshold buffers
+        # (torch.as_tensor on a Python float -> a float32 scalar tensor), so the
+        # stored constants are bit-identical to snn.Leaky's.
+        self.register_buffer("beta", torch.as_tensor(beta)
+                             if not isinstance(beta, torch.Tensor)
+                             else beta.detach().clone())
+        self.register_buffer("threshold", torch.as_tensor(threshold)
+                             if not isinstance(threshold, torch.Tensor)
+                             else threshold.detach().clone())
+        self.spike_grad = surrogate.atan() if spike_grad is None else spike_grad
+
+    def forward(self, input_, u, v):
+        """One timestep. input_/u/v: (B, N). Returns (spk, u_next, v_next).
+
+        Every line below mirrors a line of `snn.Leaky.forward` +
+        `Leaky._base_sub`; the evaluation order is load-bearing (see class doc)."""
+        beta = self.beta.clamp(0, 1)
+        # snntorch: `self.reset = self.mem_reset(self.mem)` -- previous membrane,
+        # detached, before the state update.
+        reset = self.spike_grad(u - self.threshold).clone().detach()
+        rot_u = self.cos_omega * u - self.sin_omega * v
+        rot_v = self.sin_omega * u + self.cos_omega * v
+        # snntorch: `(beta*mem + input_) - reset*threshold`, in that association.
+        u_next = beta * rot_u + input_ - reset * self.threshold
+        v_next = beta * rot_v
+        # snntorch: `spk = self.fire(self.mem)` on the ALREADY-updated membrane.
+        spk = self.spike_grad(u_next - self.threshold)
+        return spk, u_next, v_next
 
 
 def _balanced_factorization(n, n_cores):
@@ -37,7 +133,8 @@ class SpikingReservoir(nn.Module):
     def __init__(self, vocab_size=256, reservoir_size=2048, spectral_radius=1.0, beta=0.9, seed=0,
                  use_tensor_train=False, tt_rank=8, tt_n_cores=4, tt_core_std=None,
                  tt_bond_decay=1.0,
-                 input_dim=None, soft_spike=False, soft_spike_sigma_frac=0.1):
+                 input_dim=None, soft_spike=False, soft_spike_sigma_frac=0.1,
+                 neuron_model="lif", rf_period_min=2.0, rf_period_max=32.0):
         """Frozen spiking reservoir (LIF neurons, random recurrent wiring).
 
         `input_dim` controls the width of the frozen input matrix W_in (reservoir_size
@@ -84,8 +181,41 @@ class SpikingReservoir(nn.Module):
                         entanglement entropy; see _build_tt_cores for the full
                         argument and for why `spectral_radius` and `tt_core_std`
                         provably cannot.
+
+        NEURON MODEL (docs/EXPERIMENT_LOG.md §23, ablation A3):
+          neuron_model  -- "lif" (DEFAULT, unchanged) or "rf". "rf" swaps the LIF
+                        cell for `ResonateFireCell`: each unit keeps the same
+                        |lambda| = beta envelope but acquires a frozen rotation
+                        w_i, so its DC gain |1/(1 - beta*exp(i*w))| collapses while
+                        its AC accumulation gain 1/sqrt(1-beta^2) is untouched.
+                        The state gains a second component (the quadrature
+                        companion); it adds ZERO trainable parameters, and the
+                        readout still sees an N-wide binary spike vector.
+          rf_period_min/rf_period_max -- support of the resonant-period draw, in env
+                        steps. §23.2 fixes [2, 32]: 2 is the Nyquist period of the
+                        discrete-time system, 32 is a quarter of the 128-step
+                        truncated-BPTT window, so every unit completes >= 4 cycles
+                        inside the horizon the readout ever sees a gradient over.
+                        T_i is drawn i.i.d. LOG-uniform (equal density per octave
+                        across the five octaves spanned) and w_i = 2*pi/T_i.
+
+        THE `omega` DRAW IS THE LAST THING THAT TOUCHES THE GENERATOR, AND ONLY IN
+        THE "rf" BRANCH. §23.5's G0e-i requires the `neuron_model="lif"` path to be
+        bit-identical to the code that produced the published v2 runs -- those runs
+        are the pilot's experimental control, so a shifted RNG stream would not
+        merely change a number, it would silently substitute a different control.
+        Placing the draw after W_in and W_res/the TT cores, inside the branch,
+        guarantees every pre-existing draw consumes exactly the generator values it
+        consumed before this parameter existed. Pinned in
+        tests/test_resonate_and_fire.py against `git show 708b32d:`.
         """
         super().__init__()
+        if neuron_model not in NEURON_MODELS:
+            raise ValueError(
+                f"unknown neuron_model: {neuron_model!r}; expected one of {NEURON_MODELS}")
+        self.neuron_model = neuron_model
+        self.rf_period_min = float(rf_period_min)
+        self.rf_period_max = float(rf_period_max)
         self.reservoir_size = reservoir_size
         self.use_tensor_train = use_tensor_train
         if input_dim is None:
@@ -135,7 +265,33 @@ class SpikingReservoir(nn.Module):
 
         # beta/threshold not learnable -> snntorch registers them as buffers, not
         # nn.Parameter, so this reservoir has no trainable parameters at all.
+        # Constructed in BOTH neuron models: it is the single source of the frozen
+        # beta/threshold constants (`_soft_spike` and the resonate-and-fire cell
+        # both read them off it), and it consumes no generator values, so its
+        # presence cannot perturb anything.
         self.lif = snn.Leaky(beta=beta, learn_beta=False, learn_threshold=False)
+
+        # --- resonate-and-fire frequencies: THE LAST DRAW, AND ONLY HERE -------- #
+        if neuron_model == "rf":
+            if not (0.0 < self.rf_period_min <= self.rf_period_max):
+                raise ValueError(
+                    f"need 0 < rf_period_min <= rf_period_max; got "
+                    f"{rf_period_min!r}, {rf_period_max!r}")
+            if self.rf_period_min < 2.0:
+                raise ValueError(
+                    f"rf_period_min={rf_period_min!r} is below the Nyquist period of "
+                    "2 steps; nothing faster is representable in discrete time (§23.2)")
+            # Log-uniform on [T_min, T_max]: uniform in log T, i.e. equal density per
+            # octave. Drawn from the reservoir's own seeded generator so the
+            # frequencies are reproducible from `seed` alone, like every other frozen
+            # weight here.
+            log_lo = math.log(self.rf_period_min)
+            log_hi = math.log(self.rf_period_max)
+            u = torch.rand(reservoir_size, generator=g)
+            periods = torch.exp(log_lo + u * (log_hi - log_lo))
+            omega = (2.0 * math.pi) / periods
+            self.rf = ResonateFireCell(omega, beta=beta,
+                                       threshold=self.lif.threshold)
 
         for p in self.parameters():
             p.requires_grad = False
@@ -384,14 +540,86 @@ class SpikingReservoir(nn.Module):
         feature at generation time too."""
         return self._soft_spike(mem) if self.soft_spike else spk
 
-    def step(self, byte_onehot_step, mem, spk):
+    @property
+    def omega(self):
+        """The frozen per-unit resonant frequencies (rf mode only).
+
+        Read through to `self.rf`'s buffer rather than kept as a second copy on
+        this module: two `register_buffer` entries holding the same tensor stop
+        being the same tensor the first time `.to()`/`.cuda()` is called (nn.Module
+        re-materializes buffers per module), which would leave a stale `omega`
+        that the frozen-weight tripwire still happily checks. One buffer, one
+        owner -- `named_buffers()` reports it as `rf.omega`, and the tripwire
+        covers it there.
+
+        A LIF reservoir raises rather than returning a tensor of zeros: zeros are a
+        valid omega (they are exactly the LIF point of the family), so returning
+        them would let rf-specific analysis run silently against the control arm and
+        report plausible numbers. NOTE that nn.Module's own `__getattr__` catches
+        the AttributeError raised below and re-raises its generic "object has no
+        attribute 'omega'", so the message here is not what a caller sees -- the
+        exception TYPE is the contract.
+        """
+        if self.neuron_model != "rf":
+            raise AttributeError(
+                f"omega exists only for neuron_model='rf' (this reservoir is "
+                f"{self.neuron_model!r})")
+        return self.rf.omega
+
+    def ac_gain(self):
+        """Accumulation gain for a zero-mean fluctuating input, 1/sqrt(1-beta^2).
+
+        Identical in both neuron models BY CONSTRUCTION: it depends only on the pole
+        MAGNITUDE |lambda| = beta, which §23.2 holds fixed at the LIF path's own
+        value, and not on the rotation. Exposed as a method so §23.5's G0a ratio is
+        computed from the reservoir under test in both arms rather than from a
+        constant typed into the analysis twice."""
+        beta = float(self.lif.beta.clamp(0, 1))
+        return 1.0 / math.sqrt(1.0 - beta * beta)
+
+    def dc_gain(self):
+        """Per-unit steady-state gain to a CONSTANT input: |1/(1 - beta*e^{i*w})|.
+
+        This is the quantity §23.3's H10 turns on. A LIF unit (w == 0) integrates a
+        constant input to 1/(1-beta) = 10.0 at beta = 0.9 while accumulating a
+        zero-mean one to only 1/sqrt(1-beta^2) = 2.2942 -- a 4.36x amplification of
+        the component that carries no information, which is the measured defect
+        §23.1 tabulates (induced membrane offset ending at 4.2x the threshold).
+        Rotating the pole collapses the first and leaves the second exactly alone,
+        and because the pole is FROZEN that attenuation cannot decay as the
+        embedding trains, which a bias initialisation demonstrably did.
+
+        Returns a (reservoir_size,) tensor in BOTH modes -- a full tensor of
+        1/(1-beta) for LIF -- so the G0a gate and the analysis are one code path,
+        not two. Written from (1 - beta*cos w)^2 + (beta*sin w)^2 rather than via
+        complex tensors: identical value, no complex dtype leaking into a
+        diagnostic that callers will want to reduce and log."""
+        beta = float(self.lif.beta.clamp(0, 1))
+        if self.neuron_model != "rf":
+            return torch.full((self.reservoir_size,), 1.0 / (1.0 - beta),
+                              device=self.W_in.device, dtype=self.W_in.dtype)
+        w = self.rf.omega
+        re = 1.0 - beta * torch.cos(w)
+        im = beta * torch.sin(w)
+        return 1.0 / torch.sqrt(re * re + im * im)
+
+    def step(self, byte_onehot_step, mem, spk, imem=None):
         """Advance the reservoir exactly ONE timestep.
 
-        byte_onehot_step: (B, vocab_size); mem, spk: (B, reservoir_size).
-        Returns (spk_next, mem_next). This is the single per-timestep body shared
-        with `forward`, exposed so callers can cache state and feed one new byte at
-        a time -- turning the O(n^2) "re-run the whole growing sequence" generation
-        loop into an O(n) incremental loop with bit-identical output.
+        byte_onehot_step: (B, vocab_size); mem, spk, imem: (B, reservoir_size).
+        Returns (spk_next, mem_next, imem_next). This is the single per-timestep
+        body shared with `forward`, exposed so callers can cache state and feed one
+        new byte at a time -- turning the O(n^2) "re-run the whole growing sequence"
+        generation loop into an O(n) incremental loop with bit-identical output.
+
+        `imem` is the resonate-and-fire quadrature companion (`v` in §23.2; `mem`
+        is `u`). In LIF mode it is inert PASS-THROUGH -- returned exactly as handed
+        in, or zeros if omitted -- and the LIF arithmetic below never reads it, so
+        the LIF path is bit-identical to the v2 code with or without it. It is
+        threaded unconditionally, rather than only in rf mode, so callers never
+        branch on the neuron model to know the shape of the state they are
+        carrying: a state tuple whose ARITY depends on a flag is the kind of thing
+        that runs fine and silently drops a component.
         """
         input_current = byte_onehot_step @ self.W_in.T
         if self.use_tensor_train:
@@ -400,17 +628,26 @@ class SpikingReservoir(nn.Module):
             recurrent_current = self._tt_matvec(spk)
         else:
             recurrent_current = spk @ self.W_res.T
-        return self.lif(input_current + recurrent_current, mem)  # (spk, mem)
+        current = input_current + recurrent_current
+        if self.neuron_model == "rf":
+            if imem is None:
+                imem = torch.zeros_like(mem)
+            return self.rf(current, mem, imem)               # (spk, u, v)
+        spk_next, mem_next = self.lif(current, mem)
+        if imem is None:
+            imem = torch.zeros_like(mem_next)
+        return spk_next, mem_next, imem
 
     def forward(self, byte_onehot_seq):
         # byte_onehot_seq: (B, T, vocab_size)
         B, T, _ = byte_onehot_seq.shape
         device = byte_onehot_seq.device
         mem = torch.zeros(B, self.reservoir_size, device=device)
+        imem = torch.zeros(B, self.reservoir_size, device=device)
         spk = torch.zeros(B, self.reservoir_size, device=device)
         feats_out = []
         for t in range(T):
-            spk, mem = self.step(byte_onehot_seq[:, t, :], mem, spk)
+            spk, mem, imem = self.step(byte_onehot_seq[:, t, :], mem, spk, imem)
             # readout_feature is `spk` verbatim in the default (hard-spike) mode --
             # byte-for-byte the original loop -- or the graded soft spike when on.
             feats_out.append(self.readout_feature(spk, mem))
@@ -472,6 +709,19 @@ class SpikingReservoir(nn.Module):
         earliest timestep any neuron crosses threshold (that prefix is then exact by
         the exact reset semantics -- reset_delay=True means a spike affects mem only
         one step later), resolve that single spike, and continue from there."""
+        if self.neuron_model != "lif":
+            # The affine-scan segmentation is LIF-SPECIFIC: it composes the scalar
+            # map mem -> beta*mem + input, which is exactly what a resonate-and-fire
+            # unit is NOT -- its between-reset map is a 2x2 rotation-scaling on
+            # (u, v), so a scan over scalar (a, b) pairs would silently drop the
+            # quadrature component and return plausible, WRONG numbers. Refused
+            # rather than approximated: this is a negative-result research artifact
+            # (see the block comment above) and not worth generalising.
+            raise NotImplementedError(
+                f"forward_parallel is a LIF-only research artifact; this reservoir is "
+                f"neuron_model={self.neuron_model!r}, whose between-reset dynamics are "
+                "a 2x2 rotation on (u, v) rather than a scalar affine map. Use "
+                "forward() or step().")
         if self.use_tensor_train:
             # Dense-only reference path: it indexes self.W_res directly, which a TT
             # reservoir does not materialize. Use forward()/step() for TT reservoirs.

@@ -561,6 +561,64 @@ def test_build_command_includes_run_tag_only_when_given(tmp_path):
     assert cmd[cmd.index("--run-tag") + 1] == "per-group"
 
 
+def test_build_command_forwards_the_neuron_model_flags(tmp_path):
+    """docs/EXPERIMENT_LOG.md §23's pilot is launched through this driver, so a
+    `--neuron-model` this launcher accepted but did not forward would run three
+    LIF seeds and label them rf. The period bounds go with it: §23.2 fixes them
+    a priori, and two rf runs with different bounds are different experiments."""
+    config = _config(tmp_path, neuron_model="rf", rf_period_min=2.0,
+                     rf_period_max=32.0)
+    job = build_job_matrix(config, arms=("reservoir",), seeds=(1,))[0]
+    cmd = build_command("python3", job, config)
+
+    def flag(name):
+        return cmd[cmd.index(name) + 1]
+
+    assert flag("--neuron-model") == "rf"
+    assert flag("--rf-period-min") == "2.0"
+    assert flag("--rf-period-max") == "32.0"
+
+
+def test_build_command_forwards_the_default_neuron_model_explicitly(tmp_path):
+    """Passed explicitly rather than omitted-when-default, exactly as
+    --grad-clip-mode/--embed-init-mode already are: the child's argv is what ends
+    up in the launcher log, and a run whose neuron model has to be inferred from
+    an absent flag is a run nobody can label after the fact."""
+    config = _config(tmp_path)
+    job = build_job_matrix(config, arms=("baseline",), seeds=(0,))[0]
+    cmd = build_command("python3", job, config)
+    assert cmd[cmd.index("--neuron-model") + 1] == "lif"
+
+
+def test_dry_run_surfaces_the_neuron_model_flags(tmp_path):
+    """--dry-run is the last human checkpoint before hours of compute (see
+    `format_dry_run_lines`'s own docstring), so the flags that decide WHICH
+    experiment runs have to be visible in it."""
+    config = _config(tmp_path, neuron_model="rf", rf_period_min=2.0,
+                     rf_period_max=32.0, run_tag="rf-pilot")
+    jobs = build_job_matrix(config, arms=("reservoir",), seeds=(0, 1, 2))
+    lines = format_dry_run_lines(jobs, "python", config)
+    body = "\n".join(lines)
+    assert body.count("--neuron-model rf") == 3
+    assert "--rf-period-min 2.0" in body
+    assert "--rf-period-max 32.0" in body
+    assert "TOTAL JOBS: 3" in body
+
+
+def test_parse_args_defaults_and_accepts_the_neuron_model_flags():
+    args = rtm.parse_args(["--rom", "fake.gb"])
+    assert args.neuron_model == "lif"
+    assert args.rf_period_min == 2.0 and args.rf_period_max == 32.0
+
+    args = rtm.parse_args(["--rom", "fake.gb", "--neuron-model", "rf",
+                           "--rf-period-min", "4", "--rf-period-max", "16"])
+    assert args.neuron_model == "rf"
+    assert args.rf_period_min == 4.0 and args.rf_period_max == 16.0
+
+    with pytest.raises(SystemExit):
+        rtm.parse_args(["--rom", "fake.gb", "--neuron-model", "resonate"])
+
+
 # ---------------------------------------------------------------------------
 # 10. Real subprocess / log-file redirection (the one unmocked test)
 # ---------------------------------------------------------------------------

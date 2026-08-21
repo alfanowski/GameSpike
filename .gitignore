@@ -35,6 +35,23 @@ checkpoints_v2_*_launch.log
 results_v2_eval.log
 pipeline_v2.log
 
+# Resonate-and-fire pilot (docs/EXPERIMENT_LOG.md §23). Same PARENT-directory
+# tagging convention as the v2 block above, and for the same reason: every run
+# directory has to stay named exactly `{arm}_seed{n}` or
+# analysis/aggregate_results.py's anchored `^(?P<arm>[A-Za-z0-9]+)_seed(\d+)$`
+# silently matches nothing, so the tag goes on the checkpoint-dir rather than into
+# --run-tag. Checkpoints are 292 MB per arm and reproducible from a seed.
+#
+# results_rf_pilot/ is deliberately NOT ignored: evaluation JSONs are committed in
+# this project (see results_v2/), because they are small and they are the only
+# artifact a reader can check the published numbers against.
+checkpoints_rf_pilot/**/*.pt
+checkpoints_rf_pilot/**/*.json
+checkpoints_rf_pilot/**/*.jsonl
+checkpoints_rf_pilot/**/*.log
+checkpoints_rf_pilot_init/
+rf_pilot_*.log
+
 # Preserved wreckage of the 23:38:53 power loss (docs/EXPERIMENT_LOG.md §18): the
 # v2 reservoir runs as they stood at ~95.7% when the machine died. Kept rather
 # than deleted so the restarted arm's logs can be diffed against them over the
