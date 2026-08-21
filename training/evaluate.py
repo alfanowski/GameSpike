@@ -108,7 +108,7 @@ import torch
 
 from envs.mario_land_env import MarioLandEnv, OBS_DIM
 from training.novelty_gate import NoveltyGate
-from training.train import build_model, load_checkpoint
+from training.train import TASKS, build_model, load_checkpoint, parse_task
 
 DEVICE = torch.device("cpu")
 
@@ -153,14 +153,15 @@ def _summarise(name: str, values) -> dict:
 
 def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: int,
                    max_steps_per_episode: int = 3000, novelty_coef: float = 0.05,
-                   seed: int = 0, state_reset_interval: int = None) -> dict:
+                   seed: int = 0, state_reset_interval: int = None,
+                   task: tuple = None) -> dict:
     """Play `n_episodes` with `arm`'s checkpoint and report per-episode statistics.
 
     Episode i is driven by a private generator seeded `seed + i`, so the run is
     reproducible from `seed` alone while the episodes still differ from one
     another. Returns the keys documented in `_summarise` for `extrinsic_return`,
     `combined_return` and `episode_length`, plus `arm`, `n_episodes`, `seed`,
-    `episode_seeds` and `state_reset_interval`.
+    `episode_seeds`, `state_reset_interval` and `task`.
 
     `state_reset_interval` (default None = never reset within an episode) re-inits
     the model's recurrent state every N env steps, mirroring what training does at
@@ -169,6 +170,15 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
     score one continuous playthrough. These measure different things and the
     difference between them is itself informative -- see the module docstring's
     "THE RECURRENT-STATE REGIME HERE IS NOT THE ONE EITHER ARM WAS TRAINED IN".
+
+    `task`: Phase 2a's axis, SAME semantics as `training/train.py`'s `--task`.
+    None (default) is EXACTLY the historical behaviour -- the env is constructed
+    with `world_level=None`, i.e. the power-on boot to world 1-1. A `(world,
+    level)` tuple evaluates on that level instead. This is independent of which
+    task the CHECKPOINT was actually trained on: scoring a 1-1 specialist on 2-1
+    (or vice versa) is the zero-shot transfer measurement Phase 2a's performance
+    matrix needs, not an error, so nothing here cross-checks `task` against
+    whatever the checkpoint recorded.
     """
     if n_episodes < 1:
         raise ValueError(f"n_episodes must be >= 1, got {n_episodes}")
@@ -180,13 +190,19 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
     # overwrites every buffer, the reservoir's frozen W_in/TT cores included, with
     # the ones the checkpoint was actually trained with (they are persistent
     # buffers, so they are in the state dict). The construction seed only decides
-    # what gets thrown away.
+    # what gets thrown away. `obs_mean` is left at build_model's own default for
+    # the identical reason: embed_init_mode defaults to "legacy" here (it is not
+    # even a parameter of this function), which never reads obs_mean at all, and
+    # even under "centered" the checkpoint's own embedding weights overwrite
+    # whatever this construction seeded (see training/train.py's load_checkpoint
+    # docstring, "the new keys change nothing about the RESTORE itself").
     model, optimizer = build_model(arm)
     load_checkpoint(model, optimizer, checkpoint_path, expected_arm=arm)
     model.eval()
     init_state_fn, step_fn = model._init_state_fn, model._step_fn
 
-    env = MarioLandEnv(rom_path=rom_path, max_episode_steps=max_steps_per_episode)
+    env = MarioLandEnv(rom_path=rom_path, max_episode_steps=max_steps_per_episode,
+                       world_level=task)
     episode_seeds = [seed + i for i in range(n_episodes)]
     extrinsic_returns, combined_returns, lengths = [], [], []
     try:
@@ -241,7 +257,8 @@ def run_evaluation(arm: str, checkpoint_path: str, rom_path: str, n_episodes: in
 
     results = {"arm": arm, "n_episodes": n_episodes, "seed": seed,
                "episode_seeds": episode_seeds,
-               "state_reset_interval": state_reset_interval}
+               "state_reset_interval": state_reset_interval,
+               "task": task}
     results.update(_summarise("extrinsic_return", extrinsic_returns))
     results.update(_summarise("combined_return", combined_returns))
     results.update(_summarise("episode_length", lengths))
@@ -252,7 +269,8 @@ def _format(results: dict) -> str:
     """Human-readable summary: every mean carries its spread, so nobody reads a
     single number off this output and calls it a comparison."""
     lines = [f"arm={results['arm']}  episodes={results['n_episodes']}  "
-             f"seed={results['seed']} (per-episode seeds {results['episode_seeds']})"]
+             f"seed={results['seed']} (per-episode seeds {results['episode_seeds']})  "
+             f"task={results.get('task')}"]
     for name, label in (("extrinsic_return", "extrinsic return (SCOREBOARD)"),
                         ("combined_return", "combined return (extrinsic+novelty)"),
                         ("episode_length", "episode length")):
@@ -308,11 +326,21 @@ if __name__ == "__main__":
                              "docstring")
     parser.add_argument("--json", action="store_true",
                         help="print the raw results dict as JSON instead of a summary")
+    parser.add_argument("--task", choices=list(TASKS), default=None,
+                        help="Phase 2a's task axis, SAME semantics as training/train.py's "
+                             "--task: which Super Mario Land level to evaluate on. Unset "
+                             "(default) is EXACTLY the historical behaviour -- the env is "
+                             "constructed with world_level=None (power-on boot to world "
+                             "1-1). Independent of which task the CHECKPOINT was trained "
+                             "on: evaluating a 1-1 specialist with --task 2-1 is the "
+                             "zero-shot transfer measurement, not an error")
     args = parser.parse_args()
+    task = parse_task(args.task) if args.task is not None else None
     results = run_evaluation(args.arm, args.checkpoint, args.rom, args.episodes,
                              max_steps_per_episode=args.max_steps,
                              novelty_coef=args.novelty_coef, seed=args.seed,
-                             state_reset_interval=args.state_reset_interval)
+                             state_reset_interval=args.state_reset_interval,
+                             task=task)
     if args.json:
         # NaN is not valid JSON (JS's JSON.parse rejects it), and an unmeasurable
         # spread is exactly what null means, so the single-episode case

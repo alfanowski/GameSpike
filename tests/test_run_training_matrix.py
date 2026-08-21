@@ -42,6 +42,7 @@ from scripts.run_training_matrix import (
     build_job_matrix,
     final_step_for,
     force_unlock,
+    parse_args,
     parse_arms,
     parse_seeds,
     release_lock,
@@ -50,6 +51,7 @@ from scripts.run_training_matrix import (
     run_matrix,
     format_dry_run_lines,
 )
+from training.train import run_dir_for
 
 
 def _config(tmp_path, **overrides):
@@ -589,3 +591,81 @@ def test_real_run_subprocess_streams_output_to_log_file(tmp_path):
     with open(log_path) as f:
         content2 = f.read()
     assert content2.count("hello stdout") == 2
+
+
+# ---------------------------------------------------------------------------
+# 11. --task forwarding (docs/DESIGN_ROADMAP_PHASE2.md §9 item 4) -- this
+# launcher's guards and training/train.py's run_dir_for MUST agree on the
+# directory name, or the guard can pass falsely (docs/EXPERIMENT_LOG.md §19.4).
+# ---------------------------------------------------------------------------
+
+def test_task_unset_leaves_run_dir_naming_exactly_as_before(tmp_path):
+    config = _config(tmp_path)
+    assert config.task is None
+    jobs = build_job_matrix(config, arms=("baseline",), seeds=(0,))
+    assert jobs[0].run_dir == os.path.join(str(tmp_path / "checkpoints"), "baseline_seed0")
+
+
+def test_build_job_matrix_honours_task(tmp_path):
+    """This launcher must not reimplement run_dir_for's task-aware naming --
+    it goes through the SAME function training/train.py exports, so the two can
+    never silently drift apart. Asserted here by comparing against a DIRECT
+    run_dir_for call, not by hardcoding the expected string twice."""
+    config = _config(tmp_path, task=(2, 1))
+    jobs = build_job_matrix(config, arms=("baseline",), seeds=(3,))
+    assert jobs[0].run_dir == run_dir_for(
+        str(tmp_path / "checkpoints"), "baseline", 3, None, task=(2, 1))
+    assert jobs[0].run_dir == os.path.join(
+        str(tmp_path / "checkpoints"), "baseline_task2-1_seed3")
+
+
+def test_task_and_run_tag_compose_rather_than_fight(tmp_path):
+    config = _config(tmp_path, task=(1, 1), run_tag="per-group")
+    jobs = build_job_matrix(config, arms=("baseline",), seeds=(0,))
+    assert jobs[0].run_dir == run_dir_for(
+        str(tmp_path / "checkpoints"), "baseline", 0, "per-group", task=(1, 1))
+    assert os.path.basename(jobs[0].run_dir) == "baseline_task1-1_seed0_per-group"
+
+
+def test_two_tasks_at_the_same_seed_never_collide_in_the_real_matrix(tmp_path):
+    config_1_1 = _config(tmp_path, task=(1, 1))
+    config_2_1 = _config(tmp_path, task=(2, 1))
+    job_1_1 = build_job_matrix(config_1_1, arms=("baseline",), seeds=(0,))[0]
+    job_2_1 = build_job_matrix(config_2_1, arms=("baseline",), seeds=(0,))[0]
+    assert job_1_1.run_dir != job_2_1.run_dir
+
+
+def test_build_command_includes_task_only_when_given(tmp_path):
+    config = _config(tmp_path, task=(2, 1))
+    job = build_job_matrix(config, arms=("baseline",), seeds=(0,))[0]
+    cmd = build_command("python3", job, config)
+    assert "--task" in cmd
+    assert cmd[cmd.index("--task") + 1] == "2-1"
+
+
+def test_build_command_omits_task_when_unset(tmp_path):
+    config = _config(tmp_path)
+    job = build_job_matrix(config, arms=("baseline",), seeds=(0,))[0]
+    cmd = build_command("python3", job, config)
+    assert "--task" not in cmd
+
+
+def test_parse_args_task_default_is_none(tmp_path):
+    args = parse_args(["--rom", "fake.gb"])
+    assert args.task is None
+
+
+def test_parse_args_task_1_1_and_2_1_are_accepted_and_parsed_to_tuples(tmp_path):
+    """Mirrors --arms/--seeds: parse_args converts the raw CLI string into the
+    typed value (a (world, level) tuple) up front, the same way args.arms/
+    args.seeds are already tuples by the time main() sees them -- not left as a
+    string for every downstream caller to reparse."""
+    args = parse_args(["--rom", "fake.gb", "--task", "1-1"])
+    assert args.task == (1, 1)
+    args = parse_args(["--rom", "fake.gb", "--task", "2-1"])
+    assert args.task == (2, 1)
+
+
+def test_parse_args_rejects_a_task_outside_the_phase2a_set(tmp_path):
+    with pytest.raises(SystemExit):
+        parse_args(["--rom", "fake.gb", "--task", "2-3"])

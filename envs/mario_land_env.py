@@ -63,6 +63,32 @@ OBS_MEAN = (
 )
 assert len(OBS_MEAN) == OBS_DIM, "OBS_MEAN must carry one entry per observation slot"
 
+# Phase 2a's MIXTURE observation mean, for a run spanning BOTH tasks {1-1, 2-1}
+# (docs/DESIGN_ROADMAP_PHASE2.md §9 item 3, §12 OPEN-3). OBS_MEAN above stays
+# untouched -- it is Phase 1's own, 1-1-only measurement, and Phase 1's published
+# `--embed-init-mode centered` numbers depend on it never moving.
+#
+# MEASURED 2026-08-21 via `python -m scripts.measure_obs_mean --tasks 1-1,2-1
+# --steps-per-task 3000 --seed 0`: 3,000 observations from a UNIFORM-RANDOM
+# policy on 1-1 (seed 0) pooled with 3,000 from a uniform-random policy on 2-1
+# (seed 1), 6,000 steps total, then averaged per slot. Uniform-random only, NOT
+# trained+random pooled like OBS_MEAN's own original measurement: there is no
+# trained checkpoint for 2-1 to draw from at this point in the project (this
+# constant is what a Phase 2a training run's centered-init depends on, so it
+# cannot itself depend on a completed Phase 2a training run) -- see
+# scripts/measure_obs_mean.py's module docstring for the full reasoning. Slots
+# 9-11 are exactly 0.0 for the same reason OBS_MEAN's are: the documented
+# reserved-zero slots, task-independent.
+#
+# RE-MEASURE THIS if the task set changes (e.g. 2-3 is added per §12 OPEN-3's
+# deferred-not-dropped far-transfer step) or if `_build_observation` changes --
+# same rule OBS_MEAN's own docstring states, now applying per task in the mix.
+OBS_MEAN_PHASE2A = (
+    0.002750, 0.822132, -0.001146, 0.000865, 0.143500, 0.760584,
+    0.166910, 0.129167, 0.000300, 0.000000, 0.000000, 0.000000,
+)
+assert len(OBS_MEAN_PHASE2A) == OBS_DIM, "OBS_MEAN_PHASE2A must carry one entry per observation slot"
+
 # --- reward -------------------------------------------------------------------
 # read_level_progress() is in pixels but only accurate to one 16px camera block, so
 # one block of real level progress is worth exactly +1.0. Measured at frame_skip=4,
@@ -175,18 +201,31 @@ class MarioLandEnv(gym.Env):
     }
 
     def __init__(self, rom_path: str, headless: bool = True, frame_skip: int = 4,
-                 max_episode_steps: int = 3000, verify_control: bool = True):
+                 max_episode_steps: int = 3000, verify_control: bool = True,
+                 world_level: tuple = None):
         """`verify_control` gates envs/boot.py's behavioural gameplay probe.
 
         The emulator is deliberately NOT constructed here: reset() boots a fresh one
         through envs/boot.py, and building a throwaway PyBoy in the constructor
         would just pay for a ROM load nobody uses.
+
+        `world_level`: None (default) is the historical power-on path, ending at
+        world 1-1 -- Phase 1's published numbers depend on this staying exactly
+        what it always was. A `(world, level)` tuple, e.g. `(2, 1)`, boots straight
+        into that level instead, via envs/boot.py's `game_wrapper.start_game`
+        path (docs/DESIGN_ROADMAP_PHASE2.md §4.3, §14.1). Nothing else in this
+        class branches on it: the observation, the reward, the action set and the
+        termination logic are all level-agnostic (2-1 is an ordinary platformer
+        level, just with a different enemy roster and water physics), and
+        `_start_world_level` already re-bases the level-completion check on
+        whatever level actually started rather than hardcoding 1-1.
         """
         super().__init__()
         self.rom_path = rom_path
         self.frame_skip = frame_skip
         self.max_episode_steps = max_episode_steps
         self.verify_control = verify_control
+        self.world_level = world_level
         self.window = "null" if headless else "SDL2"
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(OBS_DIM,), dtype=np.float32)
         self.action_space = spaces.Discrete(len(self.ACTIONS))
@@ -278,7 +317,11 @@ class MarioLandEnv(gym.Env):
 
     # ------------------------------------------------------------ gym surface
     def reset(self, *, seed=None, options=None):
-        """Boot a fresh emulator and leave it at the start of world 1-1.
+        """Boot a fresh emulator and leave it at the start of a level.
+
+        `world_level=None` (the constructor default): world 1-1 via the power-on
+        path. `world_level=(W, L)`: straight into that level instead. See the
+        constructor's docstring.
 
         `seed` is accepted for the Gymnasium API but changes nothing: the boot is
         frame-deterministic and the game has no exposed RNG seed, so every episode
@@ -294,7 +337,8 @@ class MarioLandEnv(gym.Env):
         # skipped, rather than paid for on every episode.
         verify = self.verify_control and not self._control_verified
         self.pyboy = boot.boot_to_level_start(self.rom_path, window=self.window,
-                                              verify_control=verify)
+                                              verify_control=verify,
+                                              world_level=self.world_level)
         if verify:
             self._control_verified = True
 

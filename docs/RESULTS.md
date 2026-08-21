@@ -1298,6 +1298,18 @@ left open.
   exactly — all 30 per-episode returns, lengths and episode seeds identical. **v1 and v2
   were scored by the same harness**, which is what makes §18's side-by-side legitimate
   rather than an artefact of harness drift.
+
+  > **Correction of record, added 2026-08-21.** The byte-identity claim above was true when
+  > written and is **no longer true of `training/evaluate.py`**: roadmap Phase 2a added an
+  > optional `--task` flag to it (`docs/DESIGN_ROADMAP_PHASE2.md` §9). **`scripts/run_eval_matrix.py`
+  > is untouched and remains byte-identical** — Phase 2a deliberately got its own driver,
+  > `scripts/run_phase2a_eval.py`, rather than modifying it. What v1/v2's side-by-side
+  > actually rests on is *behavioural* identity of the scoring path, and that is preserved by
+  > construction: with `--task` unset the env is built exactly as before (`world_level=None`,
+  > the power-on boot to world 1-1), which `tests/test_task_axis_rom.py` asserts directly.
+  > Nothing in v1's or v2's numbers changes. Recorded here rather than silently, because a
+  > reader checking the claim against the file would otherwise find it false and have no way
+  > to tell whether the results had drifted.
 - **Statistics:** `scripts/run_v2_analysis.sh`. **Do not use `EXPERIMENT_LOG.md` §14.11's
   Step 5 command** — pointing `--results-dir` at `results_v2` rather than
   `results_v2/{final,best,init}` silently compares nothing while still printing a
