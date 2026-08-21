@@ -339,9 +339,14 @@ def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
                                      obs_mean=OBS_MEAN)
         init_state_fn = model.init_state
 
+        # FOUR state components in BOTH neuron models -- `imem` is the
+        # resonate-and-fire quadrature companion, an inert zeros tensor under LIF
+        # that nothing reads (see PolicyValueReservoir.init_state). Unpacked
+        # positionally here, so an arity that depended on the neuron model would
+        # silently drop a component on one path instead of raising on either.
         def step_fn(m, obs, state):
-            logits, value, mem, spk, window = m(obs, *state)
-            return logits, value, mem, spk, window
+            logits, value, mem, imem, spk, window = m(obs, *state)
+            return logits, value, mem, imem, spk, window
     else:
         raise ValueError(f"unknown arm: {arm}")
     # requires_grad filter is what keeps the frozen reservoir frozen: the
