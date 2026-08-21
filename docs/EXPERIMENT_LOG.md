@@ -3167,3 +3167,47 @@ offset-std column §23.8 requires to be reported next to `results_v2_health.txt`
 column must use the real-part factor per unit, or the resonate-and-fire arm's offset would be
 overstated by roughly the same factor H10 predicts it to fall by, and the arithmetic error
 would be indistinguishable from the result. Both quantities are reported.
+
+### 23.11 Third correction — G0e-i is thread-count dependent, and §23.5 failed to say so
+
+Appended, not edited in. Found while implementing G0e-i, before any pilot number existed.
+
+**G0e-i as worded in §23.5 — *"a short run must reproduce a committed
+`checkpoints_v2/reservoir_seed0/train_log.jsonl` prefix exactly"* — fails when run at this
+machine's default torch thread count, on an entirely unmodified LIF path.**
+
+Five updates of `--arm reservoir --seed 0` under the v2 flag set reproduce the committed log
+**exactly at one torch thread** — all seven logged floats plus both per-group gradient norms,
+`==` and not `approx`. At ten threads the same five updates diverge by 1-3 ULP of float32:
+update 2's `grad_norm` reads 1073.9342041015625 against the published 1073.9344482421875,
+update 3's `policy_loss` −0.04000537469983101 against −0.04000537097454071, and updates 4 and
+5 diverge similarly.
+
+**This is not caused by the resonate-and-fire change.** It was verified by exporting the tree
+at commit `3050d6c` — before any resonate-and-fire code existed — and running the identical
+five updates: the same multi-threaded offsets appear field for field, and the same exact
+reproduction appears single-threaded. The cause is that float32 reductions split differently
+across a different number of threads, and every file in `checkpoints_v2/` was produced under
+`OMP_NUM_THREADS=1` / `MKL_NUM_THREADS=1`, which `scripts/run_training_matrix.py::run_job`
+sets on every child process it spawns.
+
+**The gate stands, with the missing condition named: G0e-i holds at one thread, and one
+thread is the condition under which the reference data was produced.** §23.9's claim — that
+performing no new LIF or GRU runs is legitimate *because* G0e-i verifies the LIF path is
+bit-identical — therefore holds, on the same terms the reference was created under. The
+pre-registration should have named the thread count, since its own launcher imposes it; that
+it did not is a defect in the pre-registration and is recorded as one.
+
+Two smaller defects in the same pass, neither of which moves a gate boundary:
+
+- **§23.5 calls the G0 gates "all cheap and all construction-only". G0e-i is not
+  construction-only** — it requires a real short training run against the emulator. Cheap,
+  but not construction-only.
+- **§23.6's GB block carries a fourth-decimal rounding slip against its own per-seed
+  inputs**: the LIF seeds 0-2 mean is 35.49733 where §23.6 states 35.4972, and the GRU
+  baseline mean is 39.78600 where it states 39.7861. The derived `PROMISING` threshold is
+  36.92689 against the stated 36.9268. **The pre-registered constants remain the binding
+  ones** — they were fixed before measurement and a fourth-decimal correction made afterwards
+  is exactly the kind of adjustment a pre-registration exists to prevent. `analysis/rf_pilot.py`
+  recomputes the threshold from the data and asserts it agrees with the pre-registered
+  constant to 1e-3, so a real data-handling error would still be caught.
