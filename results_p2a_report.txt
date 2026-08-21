@@ -1,0 +1,54 @@
+loaded 160 evaluation cells from results_p2a
+
+==============================================================================
+PRE-REGISTERED GO/NO-GO (docs/DESIGN_ROADMAP_PHASE2.md §15.3)
+  GO requires p < 0.05 AND Cohen's d >= 1.0, specialist vs its own init
+==============================================================================
+
+-- regime: continuous --
+  task 1-1:  spec   39.837   init    7.979   denominator   31.858
+            p = 1.08251e-05 (exact)  d = +10.889   95% CI [29.506, 34.324]
+            gate p<0.05: PASS    gate d>=1.0: PASS    => GO
+  task 2-1:  spec   17.139   init  -15.341   denominator   32.480
+            p = 1.08251e-05 (exact)  d = +10.361   95% CI [30.084, 35.232]
+            gate p<0.05: PASS    gate d>=1.0: PASS    => GO
+
+-- regime: reset128 --
+  task 1-1:  spec   38.828   init    8.195   denominator   30.633
+            p = 1.08251e-05 (exact)  d = +7.863   95% CI [27.572, 33.968]
+            gate p<0.05: PASS    gate d>=1.0: PASS    => GO
+  task 2-1:  spec   15.997   init  -15.345   denominator   31.342
+            p = 1.08251e-05 (exact)  d = +10.387   95% CI [29.008, 33.989]
+            gate p<0.05: PASS    gate d>=1.0: PASS    => GO
+
+==============================================================================
+VERDICT (on reset128, the regime training actually used): GO -- both tasks pass
+  (both regimes agree: True)
+==============================================================================
+
+-- performance matrix, normalized (§8.1/§8.2), regime continuous --
+  anchors: 1-1: init 7.979 spec 39.837   2-1: init -15.341 spec 17.139
+    trained on           eval 1-1          eval 2-1
+           1-1             +1.000            +0.629
+           2-1             +1.329            +1.000
+  -- raw mean_extrinsic_return, same cells --
+           1-1             39.837             5.081
+           2-1             50.333            17.139
+
+-- performance matrix, normalized (§8.1/§8.2), regime reset128 --
+  anchors: 1-1: init 8.195 spec 38.828   2-1: init -15.345 spec 15.997
+    trained on           eval 1-1          eval 2-1
+           1-1             +1.000            +0.653
+           2-1             +1.462            +1.000
+  -- raw mean_extrinsic_return, same cells --
+           1-1             38.828             5.108
+           2-1             52.992            15.997
+
+==============================================================================
+FORWARD TRANSFER (§15.4, descriptive -- gates nothing)
+  zero-shot normalized score of a specialist on the task it never saw
+==============================================================================
+  [continuous] trained 1-1 -> evaluated 2-1: normalized +0.629  raw 5.081 vs init -15.341  p = 1.08251e-05  d = +13.358
+  [continuous] trained 2-1 -> evaluated 1-1: normalized +1.329  raw 50.333 vs init 7.979  p = 1.08251e-05  d = +3.385
+  [reset128] trained 1-1 -> evaluated 2-1: normalized +0.653  raw 5.108 vs init -15.345  p = 1.08251e-05  d = +13.041
+  [reset128] trained 2-1 -> evaluated 1-1: normalized +1.462  raw 52.992 vs init 8.195  p = 1.08251e-05  d = +3.538
