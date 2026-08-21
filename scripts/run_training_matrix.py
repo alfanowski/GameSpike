@@ -107,19 +107,36 @@ child's JSON payload.
 Every flag `training/train.py`'s own argparse block accepts that this
 launcher forwards (`--arm`, `--rom`, `--steps`, `--checkpoint-every`,
 `--checkpoint-dir`, `--seed`, `--grad-clip-mode`, `--embed-init-mode`,
-`--embed-scale`, `--run-tag`) is its own flag here too, verified against
-`training/train.py`'s argparse block directly (around lines 717-780) rather
-than assumed -- so nothing about the matrix's configuration is hardcoded.
-The one exception is `--rollout-len`: this launcher does not expose it (it
-is not in the set of flags the task that produced this file asked to be
-forwarded), so every job runs under `training/train.py`'s own default of
-128. `DEFAULT_ROLLOUT_LEN` below exists only so `final_step_for` -- used for
-the resume guard -- agrees with that default; if a future caller ever needs
-to run this matrix with a non-default `--rollout-len`, that constant AND a
-new CLI flag both need to change together, since nothing currently forwards
-the value to the child process to keep the two in sync automatically. This
-is a real, if narrow, seam -- see this module's own tests for how it is
-pinned.
+`--embed-scale`, `--run-tag`, `--task`) is its own flag here too, verified
+against `training/train.py`'s argparse block directly (around lines
+717-780) rather than assumed -- so nothing about the matrix's configuration
+is hardcoded. The one exception is `--rollout-len`: this launcher does not
+expose it (it is not in the set of flags the task that produced this file
+asked to be forwarded), so every job runs under `training/train.py`'s own
+default of 128. `DEFAULT_ROLLOUT_LEN` below exists only so `final_step_for`
+-- used for the resume guard -- agrees with that default; if a future
+caller ever needs to run this matrix with a non-default `--rollout-len`,
+that constant AND a new CLI flag both need to change together, since
+nothing currently forwards the value to the child process to keep the two
+in sync automatically. This is a real, if narrow, seam -- see this module's
+own tests for how it is pinned.
+
+`--task` (docs/DESIGN_ROADMAP_PHASE2.md §9 item 4): Phase 2a's task axis.
+Unset (default) leaves every job's behaviour, command line and run directory
+EXACTLY as they were before this flag existed. Set (`1-1` or `2-1`, the same
+two values `training/train.py`'s own `--task` accepts), it is forwarded
+verbatim to every job's child process AND used when this launcher computes
+each job's `run_dir` -- through `training.train.run_dir_for`, the SAME
+function `training/train.py` itself uses, imported rather than
+reimplemented (see the import below), so this launcher's resume/skip guards
+can never disagree with where `train.py` actually writes. That agreement is
+not a nicety: `docs/EXPERIMENT_LOG.md` §19.4 records a completeness guard
+elsewhere in this project that passed FALSELY because its directory pattern
+and the real naming convention had quietly drifted apart -- two independent
+copies of "what does a run directory look like" is exactly the shape of bug
+that produced. `--task` and `--run-tag` compose (both are separate
+coordinates `run_dir_for` already knows how to combine; this launcher does
+not additionally reconcile them itself).
 """
 import argparse
 import concurrent.futures
@@ -152,9 +169,9 @@ if REPO_ROOT not in sys.path:
 # already agrees on). Re-declaring any of them here would create exactly the
 # "two independent copies of the same rule, silently drifting apart" failure
 # mode this project's other drivers go out of their way to avoid.
-from training.train import (GRAD_CLIP_MODES, EMBED_INIT_MODES, NEURON_MODELS,
-                            RF_PERIOD_MAX_DEFAULT, RF_PERIOD_MIN_DEFAULT,
-                            run_dir_for)
+from training.train import (EMBED_INIT_MODES, GRAD_CLIP_MODES, NEURON_MODELS,
+                            RF_PERIOD_MAX_DEFAULT, RF_PERIOD_MIN_DEFAULT, TASKS,
+                            format_task, parse_task, run_dir_for)
 
 ARMS = ("baseline", "reservoir")  # matches training/train.py's --arm choices
 DEFAULT_SEEDS = tuple(range(10))
@@ -312,6 +329,12 @@ class RunConfig:
     embed_init_mode: str
     embed_scale: float
     run_tag: Optional[str] = None
+    # Phase 2a's task axis (docs/DESIGN_ROADMAP_PHASE2.md §9 item 4). A parsed
+    # (world, level) tuple, e.g. (2, 1) -- NOT the raw "--task" spec string; see
+    # parse_args, which converts it the same way it already converts --arms/
+    # --seeds before RunConfig is ever constructed. None (default) is Phase 1's
+    # task-less matrix, unchanged.
+    task: Optional[tuple] = None
     # Defaulted, unlike the fields above, so that every existing caller (and every
     # existing test) that constructs a RunConfig without them keeps building the
     # historical configuration rather than failing -- the same courtesy `run_tag`
@@ -366,7 +389,8 @@ def build_job_matrix(config: RunConfig, arms=ARMS, seeds=DEFAULT_SEEDS,
         if arm not in arms:
             continue
         for seed in seeds:
-            run_dir = run_dir_for(config.checkpoint_dir, arm, seed, config.run_tag)
+            run_dir = run_dir_for(config.checkpoint_dir, arm, seed, config.run_tag,
+                                  task=config.task)
             jobs.append(Job(
                 arm=arm, seed=seed, run_dir=run_dir, final_step=final_step,
                 final_checkpoint_path=final_checkpoint_path_for(run_dir, final_step),
@@ -446,6 +470,8 @@ def build_command(python_exe: str, job: Job, config: RunConfig) -> list:
            "--rf-period-max", str(config.rf_period_max)]
     if config.run_tag:
         cmd += ["--run-tag", config.run_tag]
+    if config.task is not None:
+        cmd += ["--task", format_task(config.task)]
     return cmd
 
 
@@ -812,6 +838,14 @@ def parse_args(argv=None):
                              "changes this launcher's own resume-guard run directory "
                              "the same way, since both go through train.py's own "
                              "run_dir_for")
+    parser.add_argument("--task", default=None,
+                        help=f"Phase 2a's task axis: one of {sorted(TASKS)} (default: "
+                             f"unset, i.e. Phase 1's task-less matrix, unchanged). "
+                             f"Forwarded to train.py's --task if given (omitted "
+                             f"entirely from the child command otherwise); also "
+                             f"changes this launcher's own resume-guard run directory "
+                             f"the same way, since both go through train.py's own "
+                             f"run_dir_for -- see module docstring")
     parser.add_argument("--jobs", type=int, default=10,
                         help="max concurrent train.py subprocesses (default: 10, "
                              "this machine's core count)")
@@ -840,6 +874,14 @@ def parse_args(argv=None):
         args.seeds = parse_seeds(args.seeds)
     except ValueError as exc:
         parser.error(str(exc))
+    # Same pattern as --arms/--seeds above: converted here, once, so args.task
+    # is already the typed (world, level) tuple (or None) by the time main() --
+    # or a test -- reads it, not a string every caller has to reparse itself.
+    if args.task is not None:
+        try:
+            args.task = parse_task(args.task)
+        except ValueError as exc:
+            parser.error(str(exc))
     return args
 
 
@@ -851,7 +893,7 @@ def main(argv=None) -> int:
         rom=args.rom, steps=args.steps, checkpoint_every=args.checkpoint_every,
         checkpoint_dir=args.checkpoint_dir, grad_clip_mode=args.grad_clip_mode,
         embed_init_mode=args.embed_init_mode, embed_scale=args.embed_scale,
-        run_tag=args.run_tag, neuron_model=args.neuron_model,
+        run_tag=args.run_tag, task=args.task, neuron_model=args.neuron_model,
         rf_period_min=args.rf_period_min, rf_period_max=args.rf_period_max,
     )
     jobs = build_job_matrix(config, arms=args.arms, seeds=args.seeds)

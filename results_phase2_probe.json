@@ -1,0 +1,683 @@
+{
+  "SML-1_levels_really_load": [
+    {
+      "requested": [
+        1,
+        1
+      ],
+      "ram_world_level": [
+        1,
+        1
+      ],
+      "ram_agrees": true,
+      "mario_sprites": 4,
+      "submarine_sprites": 0,
+      "plane_sprites": 0,
+      "level_block_at_start": 12,
+      "progress_at_start": 242,
+      "timer_at_start": 399,
+      "lives_at_start": 2,
+      "independent_evidence": "mario"
+    },
+    {
+      "requested": [
+        2,
+        1
+      ],
+      "ram_world_level": [
+        2,
+        1
+      ],
+      "ram_agrees": true,
+      "mario_sprites": 4,
+      "submarine_sprites": 0,
+      "plane_sprites": 0,
+      "level_block_at_start": 12,
+      "progress_at_start": 242,
+      "timer_at_start": 399,
+      "lives_at_start": 2,
+      "independent_evidence": "mario"
+    },
+    {
+      "requested": [
+        2,
+        3
+      ],
+      "ram_world_level": [
+        2,
+        3
+      ],
+      "ram_agrees": true,
+      "mario_sprites": 0,
+      "submarine_sprites": 4,
+      "plane_sprites": 0,
+      "level_block_at_start": 14,
+      "progress_at_start": 274,
+      "timer_at_start": 399,
+      "lives_at_start": 2,
+      "independent_evidence": "submarine"
+    },
+    {
+      "requested": [
+        4,
+        3
+      ],
+      "ram_world_level": [
+        4,
+        3
+      ],
+      "ram_agrees": true,
+      "mario_sprites": 0,
+      "submarine_sprites": 0,
+      "plane_sprites": 4,
+      "level_block_at_start": 14,
+      "progress_at_start": 274,
+      "timer_at_start": 399,
+      "lives_at_start": 2,
+      "independent_evidence": "plane"
+    }
+  ],
+  "SML-3_autoscroll": [
+    {
+      "level": [
+        1,
+        1
+      ],
+      "frames": 240,
+      "idle": {
+        "progress_delta": 0,
+        "level_block_delta": 0,
+        "timer_delta": -6,
+        "mario_x": 50,
+        "mario_y": 134
+      },
+      "hold_right": {
+        "progress_delta": 127,
+        "level_block_delta": 6,
+        "timer_delta": -3,
+        "mario_x": 81,
+        "mario_y": 134
+      },
+      "free_fraction": 0.0
+    },
+    {
+      "level": [
+        2,
+        1
+      ],
+      "frames": 240,
+      "idle": {
+        "progress_delta": 0,
+        "level_block_delta": 0,
+        "timer_delta": -6,
+        "mario_x": 50,
+        "mario_y": 134
+      },
+      "hold_right": {
+        "progress_delta": 0,
+        "level_block_delta": 0,
+        "timer_delta": 1,
+        "mario_x": 50,
+        "mario_y": 134
+      },
+      "free_fraction": null
+    },
+    {
+      "level": [
+        2,
+        3
+      ],
+      "frames": 240,
+      "idle": {
+        "progress_delta": 112,
+        "level_block_delta": 7,
+        "timer_delta": -6,
+        "mario_x": 50,
+        "mario_y": 134
+      },
+      "hold_right": {
+        "progress_delta": 143,
+        "level_block_delta": 7,
+        "timer_delta": -6,
+        "mario_x": 81,
+        "mario_y": 134
+      },
+      "free_fraction": 0.7832167832167832
+    },
+    {
+      "level": [
+        4,
+        3
+      ],
+      "frames": 240,
+      "idle": {
+        "progress_delta": 112,
+        "level_block_delta": 7,
+        "timer_delta": -6,
+        "mario_x": 50,
+        "mario_y": 134
+      },
+      "hold_right": {
+        "progress_delta": 222,
+        "level_block_delta": 7,
+        "timer_delta": -6,
+        "mario_x": 160,
+        "mario_y": 134
+      },
+      "free_fraction": 0.5045045045045045
+    }
+  ],
+  "SML-4_axis_control": [
+    {
+      "level": [
+        1,
+        1
+      ],
+      "right": {
+        "dx": 31,
+        "dy": 0
+      },
+      "left": {
+        "dx": -13,
+        "dy": 0
+      },
+      "up": {
+        "dx": 0,
+        "dy": 0
+      },
+      "down": {
+        "dx": 0,
+        "dy": 0
+      }
+    },
+    {
+      "level": [
+        2,
+        1
+      ],
+      "right": {
+        "dx": 31,
+        "dy": 0
+      },
+      "left": {
+        "dx": -36,
+        "dy": 51
+      },
+      "up": {
+        "dx": 0,
+        "dy": 0
+      },
+      "down": {
+        "dx": 0,
+        "dy": 0
+      }
+    },
+    {
+      "level": [
+        2,
+        3
+      ],
+      "right": {
+        "dx": 59,
+        "dy": 0
+      },
+      "left": {
+        "dx": -36,
+        "dy": 0
+      },
+      "up": {
+        "dx": 0,
+        "dy": -59
+      },
+      "down": {
+        "dx": 0,
+        "dy": 0
+      }
+    },
+    {
+      "level": [
+        4,
+        3
+      ],
+      "right": {
+        "dx": 59,
+        "dy": 0
+      },
+      "left": {
+        "dx": -36,
+        "dy": 0
+      },
+      "up": {
+        "dx": 0,
+        "dy": -59
+      },
+      "down": {
+        "dx": 0,
+        "dy": 14
+      }
+    }
+  ],
+  "SML-2_determinism": [
+    {
+      "level": [
+        1,
+        1
+      ],
+      "replay_frames": 300,
+      "state_bytes": 143103,
+      "same_process_identical": true,
+      "fresh_process_identical": true,
+      "same_matches_fresh": true,
+      "boot_repeat_identical": true,
+      "boot_matches_savestate": true,
+      "digests": {
+        "same_process": [
+          "3a7eaad75d75fd060354581d39b6849fafa8494d0f168ca33473940a5704e188"
+        ],
+        "fresh_process": [
+          "3a7eaad75d75fd060354581d39b6849fafa8494d0f168ca33473940a5704e188"
+        ],
+        "boot_repeat": [
+          "3a7eaad75d75fd060354581d39b6849fafa8494d0f168ca33473940a5704e188"
+        ]
+      }
+    },
+    {
+      "level": [
+        2,
+        3
+      ],
+      "replay_frames": 300,
+      "state_bytes": 143103,
+      "same_process_identical": true,
+      "fresh_process_identical": true,
+      "same_matches_fresh": true,
+      "boot_repeat_identical": true,
+      "boot_matches_savestate": true,
+      "digests": {
+        "same_process": [
+          "d722f9cfc09390b6c4c780c6f29599a22b7866b9ba248566ed67a7e342e36678"
+        ],
+        "fresh_process": [
+          "d722f9cfc09390b6c4c780c6f29599a22b7866b9ba248566ed67a7e342e36678"
+        ],
+        "boot_repeat": [
+          "d722f9cfc09390b6c4c780c6f29599a22b7866b9ba248566ed67a7e342e36678"
+        ]
+      }
+    }
+  ],
+  "SML-2b_timer_div": {
+    "pinned_0": {
+      "trials": 4,
+      "distinct": 1,
+      "deterministic": true,
+      "digest": "3a7eaad75d75fd06"
+    },
+    "randomised_none": {
+      "trials": 4,
+      "distinct": 1,
+      "deterministic": true,
+      "digest": "3a7eaad75d75fd06"
+    },
+    "pinning_changes_outcome": false
+  },
+  "SML-5_hold_right_survival": [
+    {
+      "level": [
+        1,
+        1
+      ],
+      "frames": 480,
+      "lives_at_start": 2,
+      "lives_at_end": 1,
+      "first_death_frame": 336,
+      "peak_progress": 369,
+      "peak_progress_gain": 127
+    },
+    {
+      "level": [
+        2,
+        1
+      ],
+      "frames": 480,
+      "lives_at_start": 2,
+      "lives_at_end": 0,
+      "first_death_frame": 235,
+      "peak_progress": 337,
+      "peak_progress_gain": 95
+    },
+    {
+      "level": [
+        2,
+        3
+      ],
+      "frames": 480,
+      "lives_at_start": 2,
+      "lives_at_end": 2,
+      "first_death_frame": null,
+      "peak_progress": 657,
+      "peak_progress_gain": 415
+    },
+    {
+      "level": [
+        4,
+        3
+      ],
+      "frames": 480,
+      "lives_at_start": 2,
+      "lives_at_end": 1,
+      "first_death_frame": 443,
+      "peak_progress": 496,
+      "peak_progress_gain": 254
+    }
+  ],
+  "KDL-1_wrapper": {
+    "wrapper_class": "GameWrapperKirbyDreamLand",
+    "wrapper_bound": true,
+    "score": 0,
+    "health": 6,
+    "lives_left": 4,
+    "game_over": 0,
+    "x_at_start": 40,
+    "x_after_right": 76,
+    "x_after_left": 36,
+    "player_has_control": true
+  },
+  "KDL-2_addresses": {
+    "at_start": {
+      "x": 40,
+      "y": 93,
+      "scroll_x": 1,
+      "health": 6,
+      "lives": 5,
+      "score_bytes": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "hold_right": {
+      "dx": 36,
+      "dy": 3,
+      "dscroll": 2,
+      "health": 6,
+      "lives": 5
+    },
+    "hold_left": {
+      "dx": -16,
+      "dy": 0,
+      "dscroll": -2,
+      "health": 6,
+      "lives": 5
+    },
+    "hold_up": {
+      "dx": -21,
+      "dy": -75,
+      "dscroll": 0,
+      "health": 6,
+      "lives": 5
+    },
+    "hold_down": {
+      "dx": 0,
+      "dy": 25,
+      "dscroll": 0,
+      "health": 6,
+      "lives": 5
+    },
+    "hold_a": {
+      "dx": 0,
+      "dy": -30,
+      "dscroll": 0,
+      "health": 6,
+      "lives": 5
+    },
+    "wrapper_agrees": {
+      "wrapper_health": 6,
+      "ram_health": 6,
+      "wrapper_lives": 4,
+      "ram_lives_raw": 5
+    }
+  },
+  "KDL-3_progress_composes": {
+    "frames": 900,
+    "scroll_wraps_observed": 0,
+    "scroll_start": 1,
+    "scroll_end": 13,
+    "monotonic_candidate_count": 92,
+    "monotonic_candidates": [
+      {
+        "addr": "0xDE84",
+        "region": "WRAM",
+        "start": 0,
+        "end": 255,
+        "delta": 255
+      },
+      {
+        "addr": "0xD3AF",
+        "region": "WRAM",
+        "start": 12,
+        "end": 252,
+        "delta": 240
+      },
+      {
+        "addr": "0xD3B0",
+        "region": "WRAM",
+        "start": 13,
+        "end": 252,
+        "delta": 239
+      },
+      {
+        "addr": "0xD3B1",
+        "region": "WRAM",
+        "start": 11,
+        "end": 224,
+        "delta": 213
+      },
+      {
+        "addr": "0xDE74",
+        "region": "WRAM",
+        "start": 0,
+        "end": 199,
+        "delta": 199
+      },
+      {
+        "addr": "0xD2C4",
+        "region": "WRAM",
+        "start": 48,
+        "end": 244,
+        "delta": 196
+      },
+      {
+        "addr": "0xD2C6",
+        "region": "WRAM",
+        "start": 48,
+        "end": 244,
+        "delta": 196
+      },
+      {
+        "addr": "0xD2C8",
+        "region": "WRAM",
+        "start": 48,
+        "end": 244,
+        "delta": 196
+      },
+      {
+        "addr": "0xDE16",
+        "region": "WRAM",
+        "start": 0,
+        "end": 192,
+        "delta": 192
+      },
+      {
+        "addr": "0xDE3E",
+        "region": "WRAM",
+        "start": 0,
+        "end": 192,
+        "delta": 192
+      },
+      {
+        "addr": "0xDF69",
+        "region": "WRAM",
+        "start": 0,
+        "end": 186,
+        "delta": 186
+      },
+      {
+        "addr": "0xDF59",
+        "region": "WRAM",
+        "start": 0,
+        "end": 172,
+        "delta": 172
+      },
+      {
+        "addr": "0xD058",
+        "region": "WRAM",
+        "start": 0,
+        "end": 144,
+        "delta": 144
+      },
+      {
+        "addr": "0xDE45",
+        "region": "WRAM",
+        "start": 0,
+        "end": 136,
+        "delta": 136
+      },
+      {
+        "addr": "0xC01A",
+        "region": "WRAM",
+        "start": 0,
+        "end": 130,
+        "delta": 130
+      },
+      {
+        "addr": "0xC01E",
+        "region": "WRAM",
+        "start": 0,
+        "end": 130,
+        "delta": 130
+      },
+      {
+        "addr": "0xC022",
+        "region": "WRAM",
+        "start": 0,
+        "end": 130,
+        "delta": 130
+      },
+      {
+        "addr": "0xC026",
+        "region": "WRAM",
+        "start": 0,
+        "end": 130,
+        "delta": 130
+      },
+      {
+        "addr": "0xD1A4",
+        "region": "WRAM",
+        "start": 0,
+        "end": 128,
+        "delta": 128
+      },
+      {
+        "addr": "0xDE7C",
+        "region": "WRAM",
+        "start": 0,
+        "end": 119,
+        "delta": 119
+      },
+      {
+        "addr": "0xDF3F",
+        "region": "WRAM",
+        "start": 0,
+        "end": 118,
+        "delta": 118
+      },
+      {
+        "addr": "0xFFDB",
+        "region": "HRAM",
+        "start": 2,
+        "end": 119,
+        "delta": 117
+      },
+      {
+        "addr": "0xDE64",
+        "region": "WRAM",
+        "start": 0,
+        "end": 115,
+        "delta": 115
+      },
+      {
+        "addr": "0xDF2F",
+        "region": "WRAM",
+        "start": 0,
+        "end": 115,
+        "delta": 115
+      },
+      {
+        "addr": "0xD1E6",
+        "region": "WRAM",
+        "start": 33,
+        "end": 140,
+        "delta": 107
+      }
+    ]
+  },
+  "KDL-3b_traversal": {
+    "scripted": {
+      "hold_right": {
+        "max_scroll": 13,
+        "final_scroll": 13,
+        "x": 76,
+        "score": 800,
+        "health": 5
+      },
+      "right_plus_jump": {
+        "max_scroll": 30,
+        "final_scroll": 30,
+        "x": 76,
+        "score": 400,
+        "health": 5
+      },
+      "right_plus_fly": {
+        "max_scroll": 71,
+        "final_scroll": 71,
+        "x": 152,
+        "score": 400,
+        "health": 5
+      }
+    },
+    "random": [
+      {
+        "seed": 0,
+        "max_scroll": 21,
+        "score": 1600,
+        "health": 5,
+        "game_over": false
+      },
+      {
+        "seed": 1,
+        "max_scroll": 11,
+        "score": 2000,
+        "health": 4,
+        "game_over": false
+      },
+      {
+        "seed": 2,
+        "max_scroll": 3,
+        "score": 0,
+        "health": 6,
+        "game_over": false
+      },
+      {
+        "seed": 3,
+        "max_scroll": 12,
+        "score": 1000,
+        "health": 5,
+        "game_over": false
+      }
+    ],
+    "union_action_space_size": 20
+  }
+}

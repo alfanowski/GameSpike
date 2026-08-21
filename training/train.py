@@ -170,7 +170,7 @@ import os
 import numpy as np
 import torch
 
-from envs.mario_land_env import MarioLandEnv, OBS_DIM, OBS_MEAN
+from envs.mario_land_env import MarioLandEnv, OBS_DIM, OBS_MEAN, OBS_MEAN_PHASE2A
 from models.embedding_init import EMBED_INIT_MODES as _EMBED_INIT_MODES
 from models.policy_value_gru import PolicyValueGRU
 from models.policy_value_reservoir import PolicyValueReservoir
@@ -209,6 +209,38 @@ GRAD_CLIP_MODES = ("global", "per-group")
 # must be the same tuple, or a mode could be accepted here and rejected there.
 EMBED_INIT_MODES = _EMBED_INIT_MODES
 
+# Phase 2a's task axis (docs/DESIGN_ROADMAP_PHASE2.md §9 item 3, §12 OPEN-3,
+# resolved 2026-08-21: the two-task set {1-1, 2-1}; 2-3 is DEFERRED, not dropped
+# -- see that section for why). Keyed by the exact "--task" spelling, so
+# `TASKS[spec]` and `parse_task(spec)` are the same lookup and `format_task` is
+# its exact inverse. Deliberately an ALLOW-LIST, not a generic "any W-L pair"
+# parser: envs/boot.py's world_level path is only EMPIRICALLY CONFIRMED
+# (§14.1/§14.5) for the levels this project actually measured, and accepting an
+# arbitrary pair would let a typo silently boot into an unverified level and
+# train against nobody-knows-what -- exactly the failure envs/ram_map.py's own
+# "do not add or trust an address without empirical confirmation" rule exists to
+# prevent, applied to a level rather than an address.
+TASKS = {"1-1": (1, 1), "2-1": (2, 1)}
+
+
+def parse_task(spec: str) -> tuple:
+    """'1-1' -> (1, 1). Raises ValueError naming the valid choices for anything
+    not in TASKS -- see TASKS's own comment for why this is an allow-list rather
+    than a generic parser."""
+    if spec not in TASKS:
+        raise ValueError(f"--task: unknown task {spec!r}; must be one of {sorted(TASKS)}")
+    return TASKS[spec]
+
+
+def format_task(task: tuple) -> str:
+    """(1, 1) -> '1-1'. The exact inverse of parse_task/TASKS, so every tool that
+    renders a task into a path fragment or a re-typeable CLI value (run_dir_for,
+    scripts/run_training_matrix.py, scripts/run_phase2a_eval.py) agrees on the
+    same spelling."""
+    world, level = task
+    return f"{world}-{level}"
+
+
 # `lif` -- snntorch's Leaky, the neuron every existing checkpoint was produced
 #          under. THE DEFAULT, and it stays the default: docs/EXPERIMENT_LOG.md
 #          §23.5's G0e-i makes the published v2 LIF runs the resonate-and-fire
@@ -239,14 +271,16 @@ DEVICE = torch.device("cpu")
 TRAIN_LOG_NAME = "train_log.jsonl"
 
 
-def run_dir_for(checkpoint_dir: str, arm: str, seed: int, run_tag: str = None) -> str:
-    """Per-run output directory: `{checkpoint_dir}/{arm}_seed{seed}[_{run_tag}]`.
+def run_dir_for(checkpoint_dir: str, arm: str, seed: int, run_tag: str = None,
+                task: tuple = None) -> str:
+    """Per-run output directory:
+    `{checkpoint_dir}/{arm}[_task{W}-{L}]_seed{seed}[_{run_tag}]`.
 
-    Both coordinates are in the path because both collide otherwise. Writing every
-    arm's checkpoints as `{checkpoint_dir}/step_{step}.pt` meant running `--arm
-    baseline` then `--arm reservoir` with default args silently overwrote the
-    first arm's checkpoints with the second's -- and the seed is in there for the
-    same reason one step further out, since §5's comparison needs SEVERAL
+    Both `arm` and `seed` are in the path because both collide otherwise. Writing
+    every arm's checkpoints as `{checkpoint_dir}/step_{step}.pt` meant running
+    `--arm baseline` then `--arm reservoir` with default args silently overwrote
+    the first arm's checkpoints with the second's -- and the seed is in there for
+    the same reason one step further out, since §5's comparison needs SEVERAL
     independently-trained checkpoints per arm sitting on disk at once.
 
     `run_tag` is the third coordinate, and it is a DATA-SAFETY requirement rather
@@ -258,14 +292,36 @@ def run_dir_for(checkpoint_dir: str, arm: str, seed: int, run_tag: str = None) -
     torch.save would overwrite each `step_N.pt` in place. `--run-tag per-group`
     sends the corrected re-run to `reservoir_seed0_per-group/` instead.
 
-    With no tag the path is BYTE-IDENTICAL to what it has always been, so every
-    existing run directory, resume path and analysis script still resolves. An
-    empty string is treated as no tag (an empty `--run-tag ""` must not produce a
-    trailing-underscore directory that silently forks the run layout).
+    With no tag AND no task the path is BYTE-IDENTICAL to what it has always
+    been, so every existing run directory, resume path and analysis script still
+    resolves. An empty string is treated as no tag (an empty `--run-tag ""` must
+    not produce a trailing-underscore directory that silently forks the run
+    layout).
+
+    `task` is Phase 2a's fourth coordinate (docs/DESIGN_ROADMAP_PHASE2.md §9 item
+    4), a `(world, level)` tuple, e.g. `(2, 1)`. `task=None` (the default) omits
+    it entirely -- the historical, task-less path, unchanged. This is the SINGLE
+    MOST IMPORTANT property of this function for Phase 2a: two tasks silently
+    colliding on the same directory (a 2-1 specialist's checkpoints landing on
+    top of a 1-1 specialist's) is exactly the class of bug
+    docs/EXPERIMENT_LOG.md §19.4 found already happening once, in a shell
+    completeness guard's unanchored glob -- see tests/test_task_axis.py for the
+    explicit collision tests this function is held to.
+
+    Positioned BEFORE `_seed`, not after: `{arm}_task1-1_seed0` and
+    `{arm}_task2-1_seed0` therefore share no `_seed`-prefixed substring at all,
+    so even a naive, unanchored glob for `{arm}_seed*` (the historical,
+    task-less pattern this repo's other tooling was written against) cannot
+    accidentally match a task-labelled directory -- the §19.4 substitution
+    failure is structurally impossible here, not merely unlikely.
     """
+    name = arm
+    if task is not None:
+        name += f"_task{format_task(task)}"
+    name += f"_seed{seed}"
     if run_tag:
-        return os.path.join(checkpoint_dir, f"{arm}_seed{seed}_{run_tag}")
-    return os.path.join(checkpoint_dir, f"{arm}_seed{seed}")
+        name += f"_{run_tag}"
+    return os.path.join(checkpoint_dir, name)
 
 
 def group_trainable_parameters(model):
@@ -343,7 +399,8 @@ def apply_grad_clipping(model, grad_clip_mode: str = "global"):
 
 
 def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
-                embed_scale: float = 1.0, neuron_model: str = "lif",
+                embed_scale: float = 1.0, obs_mean=OBS_MEAN,
+                neuron_model: str = "lif",
                 rf_period_min: float = RF_PERIOD_MIN_DEFAULT,
                 rf_period_max: float = RF_PERIOD_MAX_DEFAULT):
     """Construct one experimental arm's model plus its optimizer.
@@ -360,10 +417,17 @@ def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
 
     `embed_init_mode`/`embed_scale` are handed to BOTH arms with the same values --
     that is a control requirement, argued at length in models/embedding_init.py, not
-    a convenience. `OBS_MEAN` is passed in from `envs.mario_land_env` rather than
+    a convenience. `obs_mean` defaults to `OBS_MEAN` (1-1's own measurement, Phase
+    1's historical value) and is passed in from `envs.mario_land_env` rather than
     imported by the models, so the models stay game-agnostic (they take `obs_dim` as
     an argument) and the measured constant stays next to the observation
-    construction it describes. Defaults reproduce the historical init exactly.
+    construction it describes. `run_training` passes `OBS_MEAN_PHASE2A` instead
+    when `--task` is set (docs/DESIGN_ROADMAP_PHASE2.md §9 item 3) -- callers that
+    never heard of Phase 2a (every existing caller, including
+    `training/evaluate.py`'s `build_model(arm)`) get the historical default
+    unchanged. Only `embed_init_mode="centered"` ever reads this value; on
+    `"legacy"` it is accepted and ignored, so passing the "wrong" mean there
+    changes nothing.
 
     `neuron_model`/`rf_period_min`/`rf_period_max` are RESERVOIR-ARM ONLY, and the
     baseline arm REFUSES anything but the default rather than ignoring it. A GRU
@@ -394,7 +458,7 @@ def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
     if arm == "baseline":
         model = PolicyValueGRU(obs_dim=OBS_DIM, embed_dim=32, hidden_dim=192, n_actions=N_ACTIONS,
                                embed_init_mode=embed_init_mode, embed_scale=embed_scale,
-                               obs_mean=OBS_MEAN)
+                               obs_mean=obs_mean)
 
         # PolicyValueGRU.init_hidden returns a BARE tensor, but the collector and
         # the replay both unpack state as `logits, value, *state = step_fn(...)`,
@@ -413,7 +477,7 @@ def build_model(arm: str, seed: int = 0, embed_init_mode: str = "legacy",
                                      n_actions=N_ACTIONS, use_tensor_train=True, tt_rank=8,
                                      tt_n_cores=4, context_len=64, seed=seed,
                                      embed_init_mode=embed_init_mode, embed_scale=embed_scale,
-                                     obs_mean=OBS_MEAN, neuron_model=neuron_model,
+                                     obs_mean=obs_mean, neuron_model=neuron_model,
                                      rf_period_min=rf_period_min,
                                      rf_period_max=rf_period_max)
         init_state_fn = model.init_state
@@ -513,6 +577,12 @@ def save_checkpoint(model, optimizer, step: int, path: str):
     with the same arm+seed but different embedding initialisations are not the same
     experiment either.
 
+    `task` is stamped the same way again, getattr default None (= the historical,
+    task-less run -- see `run_dir_for`'s own docstring for why a task is a
+    directory coordinate; here it is the same fact recorded INSIDE the file, so a
+    checkpoint self-identifies even if it is ever copied or renamed out of its
+    `run_dir_for`-derived directory).
+
     `neuron_model`/`rf_period_min`/`rf_period_max` go one step further than
     metadata: they are the arguments a READER has to reconstruct the model from
     before it can load this file at all, because an `rf` state dict contains
@@ -529,6 +599,7 @@ def save_checkpoint(model, optimizer, step: int, path: str):
                 "run_tag": getattr(model, "_run_tag", None),
                 "embed_init_mode": getattr(model, "_embed_init_mode", "legacy"),
                 "embed_scale": float(getattr(model, "_embed_scale", 1.0)),
+                "task": getattr(model, "_task", None),
                 "neuron_model": getattr(model, "_neuron_model", "lif"),
                 "rf_period_min": float(
                     getattr(model, "_rf_period_min", RF_PERIOD_MIN_DEFAULT)),
@@ -538,6 +609,7 @@ def save_checkpoint(model, optimizer, step: int, path: str):
 
 def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
                     expected_seed: int = None, expected_grad_clip_mode: str = None,
+                    expected_task: tuple = None,
                     expected_neuron_model: str = None) -> int:
     """Restore a checkpoint into `model`/`optimizer`, returning its step.
 
@@ -548,13 +620,14 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
     caller passes them.
 
     BACKWARD COMPATIBILITY, load-bearing: the 200 checkpoints already on disk were
-    written before `grad_clip_mode`/`run_tag`/`embed_init_mode`/`embed_scale`
+    written before `grad_clip_mode`/`run_tag`/`embed_init_mode`/`embed_scale`/`task`
     existed and contain NONE of those keys. Every read of the new keys therefore
     goes through `.get(...)` with the historical default -- indexing them directly
     would turn all 20 completed runs into unloadable files (and take
     `training/evaluate.py`, the eval matrix and the write-up with them). A
     pre-existing checkpoint reads back as grad_clip_mode="global", run_tag=None,
-    embed_init_mode="legacy", embed_scale=1.0, which is precisely what it is.
+    embed_init_mode="legacy", embed_scale=1.0, task=None, which is precisely what
+    it is.
 
     Note the new keys change nothing about the RESTORE itself: `embed_init_mode`
     describes how the embedding was INITIALISED, and `load_state_dict` overwrites
@@ -566,6 +639,20 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
     accumulated under the other rule, which is a scientific hazard but a legitimate
     thing to do deliberately -- and raising here would break resuming any of the
     existing runs.
+
+    `expected_task` follows `expected_arm`/`expected_seed`'s pattern, not
+    `expected_grad_clip_mode`'s: it RAISES, like arm/seed, because a task
+    mismatch is architecturally the same class of mistake arm mismatch is -- a
+    2-1 specialist's frozen weights and embedding-centering are not a valid
+    starting point to keep training as a 1-1 run, any more than a reservoir
+    checkpoint is a valid starting point for the baseline arm. `None` is the
+    SAME "unchecked" sentinel `expected_arm`/`expected_seed` use, which is a
+    genuine ambiguity here (None is also task-less runs' real, recorded value)
+    -- `run_training` resolves it by always passing its own `task` argument
+    (None for a task-less run, a tuple for a Phase 2a run) as `expected_task`,
+    so the check activates exactly when Phase 2a's task flag is in use and is
+    silently absent otherwise, matching this function's behaviour before `task`
+    existed at all.
 
     `expected_neuron_model` RAISES, and deliberately not by the same rule. A
     grad-clip mismatch changes OPTIMISATION: both checkpoints are instances of the
@@ -604,6 +691,16 @@ def load_checkpoint(model, optimizer, path: str, expected_arm: str = None,
             f"{expected_seed!r}. Continuing would produce checkpoints labelled "
             f"{expected_seed} whose frozen reservoir is in fact seed "
             f"{recorded_seed}'s -- pass --seed {recorded_seed} to continue that run."
+        )
+    # .get, never ckpt["task"]: pre-existing checkpoints have no such key.
+    recorded_task = ckpt.get("task")
+    if expected_task is not None and recorded_task != expected_task:
+        raise ValueError(
+            f"checkpoint task mismatch: {path!r} was written under task "
+            f"{recorded_task!r}, but it is being loaded for task {expected_task!r}. "
+            "A checkpoint's frozen weights and embedding centering were shaped by "
+            "the level it trained on; loading it as a different task's starting "
+            "point is never valid. Check --task, or the checkpoint path."
         )
     # .get, never ckpt["grad_clip_mode"]: pre-existing checkpoints have no such key.
     recorded_clip_mode = ckpt.get("grad_clip_mode", "global")
@@ -682,6 +779,7 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                  novelty_coef: float = 0.05,
                  grad_clip_mode: str = "global", run_tag: str = None,
                  embed_init_mode: str = "legacy", embed_scale: float = 1.0,
+                 task: tuple = None,
                  neuron_model: str = "lif",
                  rf_period_min: float = RF_PERIOD_MIN_DEFAULT,
                  rf_period_max: float = RF_PERIOD_MAX_DEFAULT):
@@ -749,9 +847,29 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     interpreted later.
 
     Checkpoints and the per-update JSONL log go to `run_dir_for(checkpoint_dir,
-    arm, seed, run_tag)`, not to `checkpoint_dir` itself, so concurrent/sequential
-    runs of different arms, seeds or tags never overwrite each other. The returned
-    stats dict carries `run_dir`/`log_path` so a caller never has to re-derive that.
+    arm, seed, run_tag, task)`, not to `checkpoint_dir` itself, so concurrent/
+    sequential runs of different arms, seeds, tags or tasks never overwrite each
+    other. The returned stats dict carries `run_dir`/`log_path` so a caller never
+    has to re-derive that.
+
+    `task` is Phase 2a's axis (docs/DESIGN_ROADMAP_PHASE2.md §9 item 3):
+
+      None            (default) EXACTLY Phase 1's behaviour -- power-on boot to
+                      world 1-1 (`MarioLandEnv(world_level=None)`), `OBS_MEAN`
+                      for `--embed-init-mode centered`, run dir
+                      `{arm}_seed{N}[_{tag}]`. Does not change, ever.
+      (world, level)  the env boots straight into that level instead
+                      (`MarioLandEnv(world_level=task)`, envs/boot.py's
+                      `game_wrapper.start_game` path), `OBS_MEAN_PHASE2A` (the
+                      {1-1, 2-1} mixture mean) is used for `--embed-init-mode
+                      centered` instead of `OBS_MEAN`, and the run dir gains a
+                      task coordinate: `{arm}_task{W}-{L}_seed{N}[_{tag}]`.
+                      Recorded in every checkpoint (`save_checkpoint`) so a
+                      checkpoint self-identifies which level it was trained on.
+
+    Nothing else branches on `task`: 2-1 is an ordinary platformer level and
+    reuses the observation, reward, action set and termination logic unchanged
+    (envs/mario_land_env.py's own docstring).
     """
     if grad_clip_mode not in GRAD_CLIP_MODES:
         raise ValueError(
@@ -766,8 +884,13 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     # the action sampling that follows). The reservoir's own frozen-weight seed is
     # a separate argument, threaded below -- see the module docstring.
     torch.manual_seed(seed)
+    # task=None -> OBS_MEAN (Phase 1's historical value, unchanged); a real task
+    # -> OBS_MEAN_PHASE2A (the {1-1, 2-1} mixture). See build_model's own
+    # docstring for why this is the only place that decides between them.
+    obs_mean = OBS_MEAN if task is None else OBS_MEAN_PHASE2A
     model, optimizer = build_model(arm, seed=seed, embed_init_mode=embed_init_mode,
-                                   embed_scale=embed_scale, neuron_model=neuron_model,
+                                   embed_scale=embed_scale, obs_mean=obs_mean,
+                                   neuron_model=neuron_model,
                                    rf_period_min=rf_period_min,
                                    rf_period_max=rf_period_max)
     # Stamped onto the model for the same reason arm/seed are (build_model): a
@@ -775,17 +898,19 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     # run that produced it.
     model._grad_clip_mode = grad_clip_mode
     model._run_tag = run_tag
+    model._task = task
     start_step = 0
     if resume_from and os.path.exists(resume_from):
         start_step = load_checkpoint(model, optimizer, resume_from,
                                      expected_arm=arm, expected_seed=seed,
                                      expected_grad_clip_mode=grad_clip_mode,
+                                     expected_task=task,
                                      expected_neuron_model=neuron_model)
     # dim=OBS_DIM: novelty is scored on the game state the agent reached, not on
     # the policy's logits. See collect_rollout_with_model's own note -- scoring
     # logits changes the reward FUNCTION per arm, not merely the reported metric.
     novelty_gate = NoveltyGate(dim=OBS_DIM, capacity=512, k=8)
-    run_dir = run_dir_for(checkpoint_dir, arm, seed, run_tag)
+    run_dir = run_dir_for(checkpoint_dir, arm, seed, run_tag, task=task)
     os.makedirs(run_dir, exist_ok=True)
     log_path = os.path.join(run_dir, TRAIN_LOG_NAME)
 
@@ -793,8 +918,10 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     last_checkpoint_step = start_step
     stats = {"mean_reward": 0.0, "mean_extrinsic_reward": 0.0, "final_step": step, "updates": 0}
     # ONE env for the whole run: rollouts continue the same episode instead of
-    # restarting world 1-1 every `rollout_len` steps.
-    env = MarioLandEnv(rom_path=rom_path)
+    # restarting the level every `rollout_len` steps. world_level=task: None
+    # reproduces the historical power-on-to-1-1 path unchanged; a real task boots
+    # straight into that level instead (see this function's own docstring).
+    env = MarioLandEnv(rom_path=rom_path, world_level=task)
     try:
         obs, _ = env.reset()
         while step < total_steps:
@@ -886,6 +1013,9 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
                 # another. Pre-existing log files simply lack these keys, which reads
                 # back as the historical ("legacy", 1.0) exactly as it should.
                 "embed_init_mode": embed_init_mode, "embed_scale": float(embed_scale),
+                # Same reasoning again: pre-existing log lines simply lack "task",
+                # which reads back as the historical task=None exactly as it should.
+                "task": task,
                 # On every line for the third time and the same reason: a learning
                 # curve whose NEURON MODEL is unknown cannot be compared with
                 # another, and the rf pilot's whole output is a comparison of two
@@ -913,6 +1043,7 @@ def run_training(arm: str, rom_path: str, total_steps: int, n_envs: int, rollout
     stats.update({"arm": arm, "seed": seed, "run_dir": run_dir, "log_path": log_path,
                   "grad_clip_mode": grad_clip_mode, "run_tag": run_tag,
                   "embed_init_mode": embed_init_mode, "embed_scale": float(embed_scale),
+                  "task": task,
                   "neuron_model": neuron_model,
                   "rf_period_min": float(rf_period_min),
                   "rf_period_max": float(rf_period_max)})
@@ -1005,7 +1136,18 @@ if __name__ == "__main__":
                              "--grad-clip-mode exists, so an untagged corrected re-run "
                              "would overwrite the completed matrix in place. This now "
                              "covers --embed-init-mode/--embed-scale too")
+    parser.add_argument("--task", choices=list(TASKS), default=None,
+                        help="Phase 2a's task axis (docs/DESIGN_ROADMAP_PHASE2.md §9 item "
+                             "3): which Super Mario Land level to train on. Unset "
+                             "(default) is EXACTLY Phase 1's behaviour -- power-on boot "
+                             "to world 1-1, OBS_MEAN, run dir {arm}_seed{seed}. Set, the "
+                             "env boots straight into that level instead (envs/boot.py's "
+                             "game_wrapper.start_game path), OBS_MEAN_PHASE2A (the "
+                             "{1-1,2-1} mixture mean) is used for --embed-init-mode "
+                             "centered in its place, and the run dir gains a task "
+                             "coordinate: {arm}_task{world}-{level}_seed{seed}")
     args = parser.parse_args()
+    task = parse_task(args.task) if args.task is not None else None
     stats = run_training(arm=args.arm, rom_path=args.rom, total_steps=args.steps,
                          n_envs=args.n_envs, rollout_len=args.rollout_len,
                          checkpoint_every=args.checkpoint_every,
@@ -1013,6 +1155,7 @@ if __name__ == "__main__":
                          resume_from=args.resume_from, seed=args.seed,
                          grad_clip_mode=args.grad_clip_mode, run_tag=args.run_tag,
                          embed_init_mode=args.embed_init_mode, embed_scale=args.embed_scale,
+                         task=task,
                          neuron_model=args.neuron_model,
                          rf_period_min=args.rf_period_min,
                          rf_period_max=args.rf_period_max)

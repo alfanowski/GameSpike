@@ -28,11 +28,15 @@ redefinition of the goal down to one game. Full version:
   control. Answers whether a frozen reservoir helps at all on real game control at a real
   matched parameter budget — without that answered honestly first, any later claim about
   generalizing across games would rest on an unverified premise.
-- **Phase 2 (not started).** Multi-game generalization *within* Game Boy / Game Boy Color —
-  the same architecture trained/tested across more than one title. This is genuinely open
-  research — continual learning and catastrophic forgetting across titles — not a solved
-  problem this project gets to assume away. See DeepMind's SIMA 1/2 and the continual-RL
-  literature (Unicorn, DisCoRL, CORA) for the context this is scoped against.
+- **Phase 2 (not started; a design document exists and is under review).** Multi-game
+  generalization *within* Game Boy / Game Boy Color — the same architecture trained/tested
+  across more than one title. This is genuinely open research — continual learning and
+  catastrophic forgetting across titles — not a solved problem this project gets to assume
+  away. See DeepMind's SIMA 1/2 and the continual-RL literature (Unicorn, DisCoRL, CORA) for
+  the context this is scoped against. The proposal — on the trained-GRU architecture that
+  won Phase 1, with pre-registered forgetting metrics and its controls transposed from
+  `DESIGN.md` §5 — is [`docs/DESIGN_ROADMAP_PHASE2.md`](docs/DESIGN_ROADMAP_PHASE2.md).
+  **Nothing in it is implemented and no run has been started.**
 - **Phase 3 (Game Boy Advance as a platform).** `pygba`/mGBA's direct Python bindings are
   dead on Apple Silicon — a hard native `SIGBUS`, root-caused to a cffi ABI-mode fragility
   on strict-alignment ARM64. A **Lua-scripting + local-socket bridge to `mgba-headless`**
@@ -111,6 +115,11 @@ changed at once, and a clipping group-count asymmetry that favours the baseline)
 - [`docs/DESIGN.md`](docs/DESIGN.md) — full design rationale: why a reactive
   platformer (not an RPG) was chosen as the first target, the architecture,
   the mandatory scientific control, and what is explicitly out of scope.
+- [`docs/DESIGN_ROADMAP_PHASE2.md`](docs/DESIGN_ROADMAP_PHASE2.md) — **a proposal, not a
+  result**: roadmap Phase 2 (multi-game generalization and catastrophic forgetting) designed
+  on the GRU architecture, with pre-registered metrics, the controls transposed from
+  `DESIGN.md` §5, a counted compute budget, and its open decisions listed rather than
+  quietly made.
 - [`docs/superpowers/plans/2026-08-19-mario-ppo-reservoir.md`](docs/superpowers/plans/2026-08-19-mario-ppo-reservoir.md) —
   the implementation plan (Phase 0 + Phase 1 only; later phases are separate,
   not-yet-written plans per the design doc's own phased build order).
