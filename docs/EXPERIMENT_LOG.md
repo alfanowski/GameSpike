@@ -3211,3 +3211,100 @@ Two smaller defects in the same pass, neither of which moves a gate boundary:
   is exactly the kind of adjustment a pre-registration exists to prevent. `analysis/rf_pilot.py`
   recomputes the threshold from the data and asserts it agrees with the pre-registered
   constant to 1e-3, so a real data-handling error would still be caught.
+
+### 23.12 PREFLIGHT RESULT — G0a passes, G0c fails, and the defect is in §23.4's grid
+
+Appended before the refinement below is run, so the ordering is on the record.
+
+**G0a passes decisively, and the pre-registration's own arithmetic reproduces.** At the
+production geometry over the three pilot seeds, mean DC gain **1.7873** against §23.3's
+analytic prediction of **1.7846**, DC/AC ratio **0.7791** against **0.7779**, AC gain
+**2.2942** identical in both neuron models by construction. Attenuation against LIF: **÷5.60**
+on both, exactly as the table claims. The frequency construction is what it was declared to be.
+
+**G0b passes and G0c fails, and no value in §23.4's pre-registered grid satisfies both.**
+Measured on `tests/data/real_obs_6000.npy`, three seeds, against a LIF v2 init reference of
+1.8107% silent at spike rate 0.018013 taken by the same instrument (which reproduces the
+figure pinned in `tests/test_embedding_centering.py` exactly, so the instrument is right):
+
+| `--embed-scale` | mean spike rate | mean silent | G0b (rate ∈ [0.005, 0.05]) | G0c (silent < 15%) |
+|---|---|---|---|---|
+| **3.0** | 0.008261 | **48.1445%** | PASS | **FAIL** |
+| **4.5** | **0.059099** | 0.9033% | **FAIL** | PASS |
+| 6.0 | 0.087700 | 0.0203% | FAIL | PASS |
+| 9.0 | 0.130902 | 0.0000% | FAIL | PASS |
+| 12.0 | 0.165476 | 0.0000% | FAIL | PASS |
+| 18.0 | 0.218580 | 0.0000% | FAIL | PASS |
+
+§23.4's criterion selects 3.0 (|log ratio| 0.7796, the smallest on the grid), which passes
+G0b and fails G0c at 48.1445% silent — close to v1's `legacy` figure of 45.5917% and nowhere
+near v2's 2.0523%. **On §23.5's terms the pilot does not launch.**
+
+**The mechanism, measured rather than guessed.** Silence is monotone in frequency: at scale
+3.0, units with resonant period T ∈ [2, 3) are **84.9% silent** while T ∈ [24, 32) are
+**23.0% silent**; the median period of a silent unit is 4.79 steps against 13.04 for a firing
+one. Real observations carry almost no energy at 2-6-step periods, so the fast half of the
+filter bank receives no drive. This is precisely the failure mode §23.4 named in prose —
+*"a construction that attenuates low frequencies attenuates some of the signal along with the
+DC"* — arriving exactly where it was predicted to.
+
+#### The correction, and why it is a correction and not a search
+
+**§23.4's grid is too coarse to resolve the operating point, and the entire transition falls
+inside its first interval.** Between 3.0 and 4.5 — a single 1.5× step — the spike rate rises
+7.2× and the silent fraction falls 53×. The criterion §23.4 declared (minimise
+`|log(rate_rf / rate_lif_init)|` against the LIF reference rate of 0.018013) is not at fault:
+it is targeting 0.018013 and the grid simply offers it no point nearer than 0.008261 below
+and 0.059099 above. A criterion cannot select a value its grid does not contain.
+
+**One refinement is therefore run, and its interval carries no discretion:** nine log-spaced
+points on **[3.0, 4.5]** — the two adjacent coarse-grid points that already bracket the
+transition, determined entirely by the table above and not chosen by preference:
+
+```
+3.000  3.155  3.318  3.490  3.671  3.861  4.061  4.271  4.500
+```
+
+The §23.4 selection criterion is **unchanged**, is evaluated over the union of the original
+grid and the refinement, and remains a construction measurement on a fixed fixture that can
+see nothing about task reward. The full refined table is reported whatever it shows.
+
+**This is the only refinement.** If the point the criterion selects on the refined grid fails
+G0b or G0c, the pilot stops and the pre-flight negative is the result — the frequency band
+would then be mismatched to this observation spectrum in a way no gain can fix, which is a
+real finding about the mechanism and is reportable as one. The grid is not widened again, the
+frequency band is not retuned, and the gates are not moved. Writing that down here, before the
+refined numbers exist, is what separates this from searching until something passes.
+
+**The precedent this rests on** is v1 §7.2's own: centring alone measured *worse* than doing
+nothing (65.9454% silent against 45.5917%), the diagnosis was that the fix needed a matched
+gain, and the validated pairing `centered` **with** scale 3.0 was arrived at by exactly this
+kind of construction-level recalibration after a construction-level measurement. That pairing
+is what v2 shipped. The same class of move, made the same way, and disclosed the same way.
+
+#### Four further corrections of record found in the same pass
+
+- **§23.5 has no rule for this outcome.** It specifies what to do when *no grid value lands in
+  G0b's band*, and says nothing about the selected value passing G0b and failing G0c. G0c is
+  also stated bare, with no scale attached, where G0b is explicitly "after the calibration".
+  The gap is real and this subsection is what fills it.
+- **§23.4's criterion is blind to starvation.** Minimising a rate ratio has no term for the
+  silent fraction, so on a coarse grid it can select the most starved point available. On a
+  grid fine enough to hit the target rate this does not bite — the LIF reference it targets is
+  itself 1.8107% silent — but the criterion should have carried the health term explicitly.
+- **§23.11's own recomputation is wrong in the fifth decimal.** It recomputed from §23.6's
+  *rounded prose* per-seed values rather than from `results_v2/final/*.json`. From the JSONs
+  the figures are **35.497222** (LIF), **39.786111** (GRU) and a derived threshold of
+  **36.926852**, against §23.11's stated 35.49733 / 39.78600 / 36.92689. The pre-registered
+  §23.6 constants remain binding and no verdict moves; `analysis/rf_pilot.py` re-derives from
+  the JSONs and agrees with the pre-registered threshold to 5.2e-5.
+- **§23.10(b) overstated its own claim.** "Smaller than the magnitude everywhere except in the
+  limit w → 0" is false at **w = π**, where the pole is real and negative and the two
+  coincide at `1/(1+beta) = 0.5263` — which is §23.3's own T = 2 entry, and §23.2 fixes
+  T_min = 2, so w = π is the support endpoint rather than an unreachable limit. Measure-zero
+  in practice and it changes nothing, but the general statement as written is false and is
+  now pinned by a test rather than silently generalised.
+- **§23.7's decision rule cannot see GA2**, although §23.6 labels GA2 co-primary. Implemented
+  as written, on GA and GB; `analysis/rf_pilot.py` prints an explicit NOTE when the two
+  primaries disagree rather than resolving a conflict the pre-registration never specified how
+  to resolve.
