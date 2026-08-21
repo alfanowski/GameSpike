@@ -2802,3 +2802,306 @@ over**: v2's two arms have statistically indistinguishable episode lengths (353.
   checkpoint against a documented ~2% healthy band. Neither shipped fix regulates it.
   This is §15.5's successor problem, now measured over a full run rather than
   extrapolated, and it is the most concrete open architectural question this project has.
+
+## 23. A3 pre-registration (refined) — the resonate-and-fire pilot
+
+**Section number:** §22 is reserved for the PR #2 merge close-out on branch
+`docs/v2-merge-closeout`, which is pushed but not yet merged into `main`. This entry takes
+§23 so the two append-only additions concatenate rather than collide.
+
+**This section is written and committed BEFORE any resonate-and-fire code exists in this
+repository, and before any resonate-and-fire number has been produced. The commit
+timestamp is the evidence; that is the whole point of the ordering.** Same rule as §11,
+§14.7 and §15.6: nothing here may be edited after the fact except by appending results
+beneath it. If a hypothesis stated here turns out wrong, the wrong statement stays on the
+page with the correction under it.
+
+Every LIF reference value quoted below is an **already-published v2 figure**
+(`docs/RESULTS.md` §15/§19, `results_v2/`, `results_v2_health.txt`,
+`checkpoints_v2/*/train_log.jsonl`). Seeing them before fixing the bands is unavoidable and
+is disclosed; what matters is that no resonate-and-fire number existed when the bands below
+were set.
+
+### 23.1 Why this runs at all, given that the precondition is unmet
+
+`DESIGN.md` §7's build-order Phase 2 gates the resonate-and-fire ablation on *"once Phase 1
+shows the reservoir arm beating baseline"*. The status note appended to that section on
+2026-08-21 records that **the precondition is not met**, and deliberately does not decide
+the build order. The project owner has decided to run this pilot anyway, and this
+subsection states the reason so it is on the record as a scientific argument rather than a
+preference.
+
+**The reason is not "try again and hope". It is that §21.5's third open gap is a specific,
+measured defect that this specific mechanism is the natural candidate to fix, and that
+neither shipped v2 fix addresses.** §21.5, quoted: *"The reservoir's operating point still
+runs away — spike rate 0.194 at the final checkpoint against a documented ~2% healthy band.
+Neither shipped fix regulates it. [...] it is the most concrete open architectural question
+this project has."*
+
+The mechanism of that runaway is visible in A9's own trajectory table
+(`results_v2_health.txt`, reservoir seed 0, step 100,096 → 1,000,064):
+
+| quantity | step 100,096 | step 1,000,064 | change |
+|---|---|---|---|
+| embedding weight norm ‖W‖ | 3.1449 | 3.4301 | +9.1% |
+| DC component ‖W·μ + b‖ | 0.1690 | 1.4206 | **×8.4** |
+| induced per-unit membrane-offset std | 0.5037 | 4.2223 | **×8.4** |
+| mean spike rate | 0.020902 | 0.161538 | **×7.7** |
+| silent fraction | 4.7607% | 32.8979% | ×6.9 |
+
+**The trained weight drifts and the centring bias does not follow it.** ‖W‖ moves by 9%
+while the DC component it induces moves by a factor of 8.4, and the induced membrane offset
+ends at **more than four times the firing threshold of 1.0**. The spike rate tracks it. The
+centred initialisation is a *starting point* on a quantity nothing in the current design
+holds; §19 of `RESULTS.md` says exactly this — *"centring fixes the initial operating point,
+and nothing in the current design regulates where the operating point goes after that."*
+
+**Resonate-and-fire attenuates that DC drive structurally, as a property of the frozen
+neuron dynamics — so unlike a bias initialisation it cannot decay as the embedding trains.**
+That is the entire argument for running it now, and §23.3 states it quantitatively and
+falsifiably rather than leaving it as a plausibility.
+
+Note that this is a *different and more specific* hypothesis than the one A3 was originally
+pre-registered under. §8's A3 reads: *"resonate-and-fire neurons (frozen, random natural
+frequencies) [...] Hypothesis: Super Mario Land's enemy/obstacle timing is genuinely
+periodic, which is the mechanism resonate-and-fire was designed to exploit."* That
+hypothesis is untouched and is not what this pilot gates on — it concerns whether the
+frequency decomposition is *useful*, which the task metric (§23.6, GB) tests. The
+operating-point hypothesis below (§23.3, H10) concerns whether the frequency decomposition
+*regulates the reservoir*, which is a construction property and is the primary gate. Both
+are reported.
+
+### 23.2 The neuron model, stated exactly
+
+Discrete-time resonate-and-fire, one complex pole per unit, written in real 2-vector form so
+no complex autograd is involved. Per unit *i*, with input current `I` (the same
+`W_in @ embedding(obs) + W_res @ spk_prev` the LIF path computes, unchanged):
+
+```
+u_next = beta * (cos(w_i) * u - sin(w_i) * v) + I      # "membrane", receives the input
+v_next = beta * (sin(w_i) * u + cos(w_i) * v)          # quadrature companion, no input
+spk    = Theta(u_next - theta)                          # threshold on u only
+u_next = u_next - theta * spk                           # subtract reset, on u only
+```
+
+with `beta = 0.9`, `theta = 1.0`, snntorch's `reset_delay=True` semantics, and snntorch's
+default ATan surrogate gradient — i.e. **every constant is the LIF path's own constant**.
+
+**At `w_i = 0` this is exactly `snn.Leaky(beta=0.9)`**: `v` decouples, stays identically
+zero, and the update collapses to `u_next = 0.9*u + I`. That is not an argument, it is a
+**required regression test** (§23.5, G0e-ii): the resonate-and-fire cell run at all-zero
+frequencies must reproduce `snn.Leaky` bit-exactly. The swap is therefore a strict
+generalisation of the current neuron model, with LIF as the ω ≡ 0 point of the family.
+
+**Frequencies.** `w_i = 2*pi / T_i`, with `T_i` drawn i.i.d. **log-uniform on T ∈ [2, 32]
+env steps**, from the reservoir's own seeded generator, stored as a frozen buffer `omega`
+covered by `assert_reservoir_frozen()`. Fixed here, before measurement:
+
+- **T_min = 2** is the Nyquist period of the discrete-time system; nothing faster is
+  representable.
+- **T_max = 32** is one quarter of the 128-step rollout / truncated-BPTT window, so every
+  unit's resonant period completes at least four cycles inside the horizon over which the
+  readout ever receives a gradient. Periods longer than that window cannot be learned about.
+- **Log-uniform** gives equal density per octave across the five octaves spanned — the
+  standard spacing for a filter bank covering a wide frequency range.
+
+**|λ| = beta = 0.9 is held identical to LIF.** The envelope decay time constant — and hence
+the memory horizon, the axis on which a frozen 8192-dim reservoir and a trained 192-dim GRU
+are most likely to differ — is set by |λ| and not by ω, so it is unchanged by construction.
+Only the rotation is added. `reservoir_size = 8192`, `tt_rank = 8`, `tt_n_cores = 4`, `W_in`
+scale 0.3, threshold 1.0, `d_model = 16`, `n_layers = 2`: all unchanged.
+
+**Zero new trainable parameters.** `omega` is a frozen buffer; the state doubles in width but
+state is activation memory, not parameters; the readout still sees an 8192-wide binary spike
+vector. Parameter parity stays at 139,179 vs 132,715 (ratio 1.0487), enforced by
+`tests/test_parameter_parity.py` — which is what makes this admissible in a matched-parameter
+comparison at all.
+
+### 23.3 H10 — the operating-point hypothesis, stated quantitatively
+
+`RESULTS.md` v1 §7.1 established the defect in exactly these terms: with `beta = 0.9`, a
+constant input integrates to steady state with gain `1/(1-beta) = 10.0` while a zero-mean
+fluctuating input accumulates only to `1/sqrt(1-beta^2) = 2.2942` — **a 4.3589×
+amplification favouring the component that carries no information**, against an observation
+whose energy is 77.70% its own mean.
+
+A resonate-and-fire unit at frequency ω has DC gain `|1/(1 - beta*exp(i*w))|`, and **AC
+accumulation gain `1/sqrt(1-beta^2)` that depends only on |λ| = beta and therefore does not
+change at all**. Computed over the pre-registered log-uniform T ∈ [2, 32]:
+
+| | LIF (ω ≡ 0) | R&F, T ~ logU[2,32] | change |
+|---|---|---|---|
+| mean DC gain | 10.0000 | **1.7846** | **÷5.60** |
+| AC gain `1/sqrt(1-beta^2)` | 2.2942 | **2.2942** | **exactly unchanged** |
+| DC/AC ratio | **4.3589** | **0.7779** | **ratio flips to favour the informative component** |
+
+Per-octave DC gains, for the record: T=2 → 0.5263, T=4 → 0.7433, T=8 → 1.3644, T=16 →
+2.6081, T=32 → 4.7359.
+
+**H10:** because the DC gain is a property of the *frozen* pole and not of a trainable bias,
+the ×8.4 growth in induced membrane offset that §23.1 tabulates cannot happen the same way.
+The operating point should therefore both **start** in the healthy band and **stay** near it
+across a full 1,000,064-step run, rather than leaving it as v1's `legacy` (0.200) and v2's
+`centered` (0.194 worst seed) both did.
+
+**The prediction that would falsify H10 cleanly** is that the spike rate runs away anyway —
+which is a real possibility, because the recurrent term `W_res @ spk` is itself a
+self-amplifying DC source that R&F attenuates only to the extent that the recurrent drive is
+also low-frequency. Nothing here assumes it will not.
+
+### 23.4 The one deliberate departure from "hold everything else fixed"
+
+**`--embed-scale` is recalibrated for the resonate-and-fire arm, and this is disclosed as an
+exception rather than presented as a null change.**
+
+The reason is v1 §7.2's own finding, which applies to this mechanism verbatim: real
+observations are temporally correlated, so the *fluctuating* part of the input is itself
+low-frequency-heavy, and a construction that attenuates low frequencies attenuates some of
+the signal along with the DC. **Centring alone was worse than doing nothing** — 65.9454%
+silent at scale 1.0 against `legacy`'s 45.5917% — because it removed the DC drive without
+replacing it and starved the reservoir; *"the bias and the gain are a fix only together."* A
+DC-attenuating neuron model has the same failure mode available to it, and holding
+`--embed-scale 3.0` fixed would risk measuring a starved reservoir and calling it a
+disconfirmation of H10.
+
+**Procedure, fixed before measurement.** `--embed-scale` is searched over the pre-declared
+grid **{3.0, 4.5, 6.0, 9.0, 12.0, 18.0}** and the value selected is the one whose **initial**
+mean spike rate on the committed fixture `tests/data/real_obs_6000.npy`, averaged over the
+three pilot seeds, minimises `|log(rate_RF / rate_LIF_v2_init)|` against the LIF v2 arm's
+initial spike rate on the same fixture, measured by the same instrument.
+
+**The selection criterion is a construction measurement on a fixed fixture and can see
+nothing about task reward.** That is what distinguishes it from a hyperparameter search on
+the outcome metric, and it is the same class of calibration `--embed-scale 3.0` itself came
+from. **All six grid values and their measured rates are reported**, whatever is selected.
+
+The same fixture caveat §14.13 records applies unchanged and is restated so it is not
+rediscovered later: `real_obs_6000.npy` was collected under **v1** policies. Holding the
+observation window fixed and varying only the neuron model is the right controlled comparison
+for a construction property; it is **not** a measurement of what a resonate-and-fire policy
+experiences in situ, and that in-situ measurement is again not taken.
+
+### 23.5 G0 — validity gates, checked before any training runs
+
+Per §15.4's distinction, these gate **validity**: if one fails, the pilot is not measuring
+what it claims to measure and does not launch. They are all cheap and all construction-only.
+
+- **G0a (frequency construction).** Analytic mean DC gain over the drawn `omega` must be
+  **< 3.0** (LIF: 10.0) and the DC/AC ratio **< 2.0** (LIF: 4.3589). Fails ⇒ the frequencies
+  were not drawn as specified.
+- **G0b (operating point is reachable).** After the §23.4 calibration, initial mean spike rate
+  on the fixture must land in **[0.005, 0.050]**. If no grid value lands in band, the
+  construction cannot be placed at a healthy operating point at all and **the pilot does not
+  run** — that is itself a reportable finding about the mechanism.
+- **G0c (not starved at init).** Initial silent fraction **< 15%** (v2 `centered`@3.0 LIF:
+  2.0523%; slack allowed because R&F changes the response shape, not merely its scale).
+- **G0d (feasibility).** Single-run quiet throughput **≥ 250 env-steps/s** (LIF v2: 439.4).
+  Below **150** the three-seed pilot's wall clock is not acceptable for this session and the
+  pilot does not launch. Measured and reported either way.
+- **G0e (the comparison is legitimate).** Non-negotiable, two parts:
+  - **G0e-i:** with `--neuron-model lif` (the default), the training path must be
+    **bit-identical to v2** — a short run must reproduce a committed
+    `checkpoints_v2/reservoir_seed0/train_log.jsonl` prefix exactly. The published v2 LIF arm
+    is this pilot's control; if the code change perturbs the LIF path, the control is no
+    longer the thing that was published.
+  - **G0e-ii:** the resonate-and-fire cell evaluated at `omega ≡ 0` must reproduce
+    `snn.Leaky(beta=0.9)` bit-exactly, establishing that LIF is the ω ≡ 0 point of the new
+    family and that the swap is a strict generalisation.
+  - The frozen-reservoir invariant must hold with `omega` included in the snapshot, and
+    `tests/test_parameter_parity.py` must pass unchanged.
+
+### 23.6 GA / GA2 / GB — efficacy gates, fixed before measurement
+
+Per §15.4, falsifying an efficacy hypothesis is **a result to report, not a failure**.
+
+All three are computed **in code**, against the bands below, by `analysis/reservoir_health.py`
+(extended) and a new `analysis/rf_pilot.py` — never by eyeballing a number afterwards, the
+same discipline A7 and A9 used. Per §17.11's instrument rule, **both sides of every comparison
+below are measured by the same instrument**: the LIF reference values are re-derived from
+`checkpoints_v2/` and `results_v2/` by the same code that measures the resonate-and-fire arm,
+and any discrepancy against the prose figures above is reported rather than silently
+preferred.
+
+**GA — primary. The operating point.** Mean spike rate at `step_1000064.pt` on
+`tests/data/real_obs_6000.npy`, mean over pilot seeds 0-2.
+
+- LIF v2 reference, same seeds, same instrument: **0.148469** (per-seed 0.161538, 0.126194,
+  0.157675). Documented healthy band: **~2%**.
+- **CONFIRMED**: mean ∈ **[0.005, 0.050]**.
+- **FALSIFIED**: mean **≥ 0.100** (less than half the distance from LIF back to the band) or
+  mean **≤ 0.002** (starved).
+- **AMBIGUOUS**: otherwise — reported with §17's own required phrase, *"confirms the direction
+  while falsifying the magnitude"*.
+
+**GA2 — co-primary. Silent units.** Mean final silent fraction, same instrument, same seeds.
+
+- LIF v2 reference, same seeds: **30.9570%** (per-seed 32.8979%, 28.2715%, 31.7017%).
+- **CONFIRMED**: **< 15%**. **FALSIFIED**: **≥ 25%**. **AMBIGUOUS**: between.
+
+**GB — secondary. Task performance, and the scale-up decision.** `mean_extrinsic_return`,
+`final` selection, `continuous` regime, 30 episodes, eval seed 0, mean over seeds 0-2, scored
+by the byte-identical harness v1 and v2 were scored by.
+
+- LIF v2 reference, same seeds: **35.4972** (per-seed 33.806, 34.842, 37.844).
+- GRU baseline, same seeds: **39.7861** (per-seed 40.904, 44.842, 33.612).
+- **Seed-matched gap: −4.2889.** Note this is *narrower* than the published 10-seed gap of
+  −8.9656 — seeds 0-2 happen to be a favourable subset for the reservoir. **The pilot is
+  therefore compared against the seed-matched figure and never against the 10-seed headline**,
+  which would flatter it.
+- **PROMISING**: R&F mean **≥ 36.9268** (closes at least one third of the seed-matched gap).
+- **NOT PROMISING**: R&F mean **≤ 35.4972** (no improvement on LIF at all).
+- **AMBIGUOUS**: between.
+
+**GB is declared underpowered here, before it is measured.** At n=3 versus n=3 the exact
+two-sided permutation test's resolution floor is 2/C(6,3) = **0.1**, so **no significance claim
+can be made from this pilot in either direction and none will be.** The per-seed sign test
+(3/3 has probability 0.125 under the null) is reported as a supporting statistic only. No
+number produced by this pilot may be quoted as a Phase 1 result, and none of it belongs in
+`docs/RESULTS.md`.
+
+### 23.7 The decision rule, fixed in advance
+
+- **SCALE-UP RECOMMENDED** ⟺ **GA CONFIRMED and GB PROMISING**. Even then, **this session does
+  not launch the 10-seed matrix.** The recommendation is reported and the decision is the
+  project owner's — the same reservation §13 places on headline-bearing changes, applied to
+  compute rather than to prose.
+- **GA FALSIFIED** ⟹ resonate-and-fire does not regulate the operating point either. Report and
+  stop, whatever GB says.
+- **GA CONFIRMED and GB NOT PROMISING** ⟹ **stop, and report it as the informative negative it
+  is.** It would establish that §21.5's "most concrete open architectural question" is real, is
+  fixable at zero parameter cost by a neuron-model swap, and is **not** what costs the frozen
+  reservoir the comparison — which is a more specific and more useful statement about this
+  architecture than another loss on the scoreboard. It is written down here, in advance,
+  precisely so it cannot later be reframed as a disappointment.
+- **Any other combination** ⟹ stop and report.
+
+### 23.8 Reported unconditionally, whatever the verdicts
+
+No band, no gate — these exist so the pilot is readable by someone who disagrees with the
+bands above:
+
+- The **full spike-rate trajectory** across all ten checkpoints, per seed. The trajectory is
+  the actual object of interest — whether the operating point *stays* in band, not only where
+  it happens to end.
+- Silent fraction, saturated fraction, ‖W‖, ‖W·μ+b‖ and induced offset-std trajectories, the
+  same columns `results_v2_health.txt` reports, so the two are readable side by side.
+- Mean per-update extrinsic **training** reward over all 7,813 updates, against the LIF v2
+  seeds 0-2 reference of **0.078594** (per-seed 0.073465, 0.089327, 0.072991) and the GRU
+  baseline's **0.112723**. Reported as a diagnostic and **not** as a gate: v2's sharpest single
+  contrast was that the corrections closed the training-reward gap from 5.82× to 1.38× while
+  the evaluation gap did not close at all, so training reward is precisely the quantity that
+  has already been shown not to predict the scoreboard here.
+- Throughput, both neuron models, on a quiet machine.
+- All six `--embed-scale` grid values from §23.4 and their measured initial rates.
+- The `reset128` regime and the `best` selection alongside `final`/`continuous`, so the pilot
+  cannot be read only through its most favourable cell.
+
+### 23.9 Scope, stated so it is not overstated later
+
+Three seeds, one arm, one game, one level, one neuron-model family, one frequency distribution
+fixed a priori and not searched. The controls are the **already-published** v2 runs at the same
+three seeds; no new LIF or GRU runs are performed, which is legitimate only because G0e-i
+verifies the LIF path is bit-identical to the one that produced them.
+
+This is a **pilot**, in the sense §6.4 of `RESULTS.md` uses the word and means it: a signal
+about whether a mechanism is worth a full matrix, not a measurement of whether it works.
