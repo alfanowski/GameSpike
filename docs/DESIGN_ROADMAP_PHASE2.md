@@ -185,7 +185,15 @@ them. All three of these are **publishable outcomes of this phase**, not failure
 
 ---
 
-## 3. The binding constraint found while writing this document
+## 3. The binding constraint found while writing this document — since lifted
+
+> **Note added 2026-08-21, hours after this section was written.** The constraint below is
+> **no longer binding**: the project owner supplied **Kirby's Dream Land (USA/Europe)**
+> (§12, OPEN-2). The section is kept unedited because its *reasoning* is what produced the
+> Phase 2a / Phase 2b split, and that split survives the constraint being lifted — Phase 2a
+> was never merely a workaround for a missing cartridge, it is the cheaper single-variable
+> measurement that validates the machinery Phase 2b then reuses (§4.2). **The sequencing
+> does not change.** What changes is that Phase 2b is now unblocked rather than waiting.
 
 **There is exactly one Game Boy ROM on this machine:
 `/Users/alfanowski/Desktop/Super Mario Land (World).gb`.** No second `.gb`/`.gbc` file
@@ -372,7 +380,13 @@ Concretely, `game_wrapper_kirby_dream_land.py` already exposes score (`0xD070`�
 health (`0xD086`), lives (`0xD089`), a game-over rule, and a menu-skipping `start_game()` —
 which is most of a boot routine and most of a RAM map, handed over.
 
-### 5.3 Which second title — a genuinely contested call, flagged as OPEN
+### 5.3 Which second title — contested when written, resolved 2026-08-21
+
+> **RESOLVED.** The project owner supplied **Kirby's Dream Land (USA/Europe)** — matching the
+> recommendation this section reaches. See §12, OPEN-2, for the verified ROM details. The
+> argument below is kept **unedited**, per this project's append-only practice: it is the
+> reasoning the decision rests on, and a future reader revisiting the Tetris option should
+> see the case for it as it was actually made, not a version rewritten after the fact.
 
 Two research passes reached **opposite recommendations**, which is itself the useful signal:
 this is not determined by the existing documents and should not be silently decided here. It
@@ -977,10 +991,21 @@ existing documents; everything not listed here is decided above with its rationa
 - **OPEN-1 — Does Phase 2a (cross-level, §4) run at all, or does the phase wait for a second
   ROM?** *Recommended: run it.* It builds every artefact Phase 2b needs and it is the only
   path that does not block on an external dependency.
-- **OPEN-2 — Which second Game Boy / Game Boy Color ROM to obtain.** *Recommended: Kirby's
-  Dream Land*, with the full Kirby-vs-Tetris tradeoff in §5.3. Two research passes disagreed
-  on this one, so the recommendation is offered with its counter-argument attached. Only the
-  project owner can execute it.
+- **OPEN-2 — Which second Game Boy / Game Boy Color ROM to obtain. ~~OPEN~~ → RESOLVED
+  2026-08-21: Kirby's Dream Land, supplied.** The project owner settled it directly and in
+  favour of the recommendation, so §5.3's Kirby-vs-Tetris tradeoff stands as the reasoning
+  and is not revisited. Verified on disk:
+  `/Users/alfanowski/Desktop/Kirby's Dream Land (USA, Europe).gb`, **262,144 bytes**, header
+  cartridge title **`KIRBY DREAM LAND`**, destination byte `0x01` (non-Japanese), cartridge
+  type `0x01` (MBC1).
+  **The release matters and is the good case.** It is the **USA/Europe** release, which is
+  what the public DataCrystal RAM map and PyBoy's built-in wrapper both target — so unlike
+  the Fire Red situation `DESIGN.md` §1.1 flags for roadmap Phase 4 (an Italian `BPRI`
+  cartridge against community maps written for the US `BPRE`), there is **no
+  release-mismatch tax** here. Published addresses are usable as *hypotheses to confirm*
+  rather than as a from-scratch discovery problem.
+  This unblocks Phase 2b's RAM-map work. It does **not** change the sequencing: Phase 2a
+  still runs first, for the reasons in §4.2.
 - **OPEN-3 — Which levels are the tasks in Phase 2a, and how many.** A minimal, defensible
   set: **1-1** (the Phase 1 task, so there is continuity), **2-1** (near transfer:
   platformer, different world, water), and optionally **2-3** (far transfer: the Marine Pop
@@ -1002,7 +1027,7 @@ existing documents; everything not listed here is decided above with its rationa
 **Not** "start training". The bounded next step, if this document is accepted, is:
 
 > Write the Phase 2a implementation plan (`docs/superpowers/plans/`), and execute only its
-> first task — **a testbed-viability probe**, comprising exactly four checks:
+> first task — **a testbed-viability probe**. Super Mario Land side, four checks:
 >
 > 1. `start_game(world_level=…)` genuinely loads 2-1, 2-3 and 4-3 (not just their HUD).
 > 2. A `save_state()` captured after the level intro, reloaded on every `reset()`, replays
@@ -1011,6 +1036,22 @@ existing documents; everything not listed here is decided above with its rationa
 >    how much of it is pure autoscroll (§4.1.1) — the number that decides the vehicle-stage
 >    reward design.
 > 4. The four unconfirmed RAM semantics of §4.4, checked with `envs/ram_scan_tool.py`.
+>
+> **Extended 2026-08-21, now that the Kirby ROM exists (§12, OPEN-2)** — three more checks,
+> at the same cost bar, because they de-risk Phase 2b for the price of running them
+> alongside:
+>
+> 5. PyBoy's Kirby wrapper actually binds to this cartridge and its `start_game()` reaches
+>    live gameplay (the wrapper matches on `cartridge_title = "KIRBY DREAM LAN"`, 15
+>    characters, against a header that reads `KIRBY DREAM LAND` — a truncation that should
+>    match but has not been observed to).
+> 6. The published addresses behave as documented — score `0xD070`–`0xD073`, health
+>    `0xD086`, lives `0xD089` from the wrapper; player X/Y `0xD05C`/`0xD05D` and scroll
+>    `0xD051` from DataCrystal — under the project's own rule that a published address is a
+>    hypothesis, never a fact (`envs/ram_map.py:63-66`).
+> 7. Whether a **level-progress signal composes** for Kirby the way it does for Mario
+>    (unwrapped camera coarse part + local X fine part), since §6.1's shared observation
+>    schema puts progress delta in slot 0 and Phase 2b's reward depends on it.
 
 That task runs no training, costs minutes of compute rather than hours, and is a strict
 prerequisite for everything else in Phase 2a. More importantly it can **invalidate the
