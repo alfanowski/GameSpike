@@ -31,6 +31,8 @@ from analysis.rf_pilot import (
     DECISION_NOT_CONFIRMED,
     DECISION_SCALE_UP,
     EMBED_SCALE_GRID,
+    EMBED_SCALE_GRID_COARSE,
+    EMBED_SCALE_GRID_REFINEMENT,
     GA2_CONFIRMED_BELOW,
     GA2_FALSIFIED_AT_OR_ABOVE,
     GA_CONFIRMED_HIGH,
@@ -418,8 +420,24 @@ class TestSelectEmbedScale:
     symmetric in log space -- half the reference rate and twice it are equally
     far -- and it is undefined at rate 0."""
 
-    def test_the_grid_is_the_preregistered_one(self):
-        assert EMBED_SCALE_GRID == (3.0, 4.5, 6.0, 9.0, 12.0, 18.0)
+    def test_the_coarse_grid_is_the_preregistered_one(self):
+        assert EMBED_SCALE_GRID_COARSE == (3.0, 4.5, 6.0, 9.0, 12.0, 18.0)
+
+    def test_the_refinement_is_the_one_declared_in_23_12(self):
+        """§23.12 fixes the refinement as nine log-spaced points on [3.0, 4.5] --
+        the two adjacent coarse-grid values that bracket the transition. The
+        endpoints are already in the coarse grid, so the refinement itself is the
+        seven interior points, and the union is what the criterion sees."""
+        assert EMBED_SCALE_GRID_REFINEMENT == (3.156, 3.32, 3.493, 3.674,
+                                               3.865, 4.066, 4.278)
+        assert EMBED_SCALE_GRID == (3.0, 3.156, 3.32, 3.493, 3.674, 3.865,
+                                    4.066, 4.278, 4.5, 6.0, 9.0, 12.0, 18.0)
+        # Log-spaced, not linearly spaced: consecutive ratios are constant.
+        ratios = [b / a for a, b in zip(EMBED_SCALE_GRID[:8], EMBED_SCALE_GRID[1:9])]
+        assert max(ratios) - min(ratios) < 1e-3
+        # The refinement stays strictly inside the bracket it was derived from,
+        # so no value outside the measured interval can be selected by it.
+        assert all(3.0 < s < 4.5 for s in EMBED_SCALE_GRID_REFINEMENT)
 
     def test_picks_the_exact_match(self):
         rates = [(3.0, 0.001), (4.5, 0.010), (6.0, 0.100)]

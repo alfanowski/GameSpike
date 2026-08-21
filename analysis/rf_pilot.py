@@ -96,7 +96,31 @@ TT_N_CORES = 4               # §23.2
 # values, ascending, and ALL SIX are reported whatever is selected -- §23.4 says
 # so in as many words, and the ascending order is what resolves a tie in
 # `select_embed_scale` (a rule the written grid fixes, not one chosen later).
-EMBED_SCALE_GRID = (3.0, 4.5, 6.0, 9.0, 12.0, 18.0)
+EMBED_SCALE_GRID_COARSE = (3.0, 4.5, 6.0, 9.0, 12.0, 18.0)
+
+# §23.12 -- the ONE declared refinement, and the reason it is not a search.
+#
+# The coarse grid above cannot satisfy G0b and G0c together: at 3.0 the initial
+# spike rate is a healthy 0.008261 and 48.1445% of the reservoir is silent; at
+# 4.5 the reservoir is live at 0.9033% silent and the rate has overshot the band
+# to 0.059099. The whole transition falls inside that one 1.5x step, across which
+# the rate rises 7.2x and the silent fraction falls 53x.
+#
+# §23.4's criterion is not what failed -- it targets the LIF reference rate of
+# 0.018013 and the grid offers it nothing nearer than 0.008261 below and 0.059099
+# above. A criterion cannot select a value its grid does not contain.
+#
+# The refinement therefore carries NO discretion: nine log-spaced points on
+# [3.0, 4.5], the two adjacent coarse-grid values that already bracket the
+# transition, fixed by the measured table and not by preference. The §23.4
+# selection criterion is unchanged and is evaluated over the union. §23.12 states
+# in advance that this is the only refinement: if the selected point fails G0b or
+# G0c the pilot stops and the preflight negative is the result.
+EMBED_SCALE_GRID_REFINEMENT = tuple(
+    round(3.0 * (4.5 / 3.0) ** (k / 8.0), 3) for k in range(1, 8)
+)
+
+EMBED_SCALE_GRID = tuple(sorted(set(EMBED_SCALE_GRID_COARSE + EMBED_SCALE_GRID_REFINEMENT)))
 
 # The reference the criterion is taken against: the LIF v2 arm's own init on the
 # same fixture, same seeds, same instrument -- i.e. `centered` at 3.0, which is
