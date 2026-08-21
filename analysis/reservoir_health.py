@@ -124,6 +124,7 @@ from analysis.pilot_diagnostics import (REAL_OBS_PATH, load_ckpt,  # noqa: E402
                                         reservoir_at, silent_fraction,
                                         trainable_names)
 from envs.mario_land_env import OBS_MEAN  # noqa: E402
+from training.train import neuron_config_from_checkpoint  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # constants -- the production geometry (training/train.py:build_model,
@@ -156,6 +157,29 @@ A9_FALSIFIED_AT_OR_ABOVE = 0.46
 AMBIGUOUS_PHRASE = "confirms the direction while falsifying the magnitude"
 
 _CHECKPOINT_FILENAME_RE = re.compile(r"^step_(?P<step>\d+)\.pt$")
+
+# A9's trajectory table layout, factored out of `section_a9` rather than left
+# inline, because §23.8 requires the resonate-and-fire pilot's own trajectories be
+# printed in "the same columns `results_v2_health.txt` reports, so the two are
+# readable side by side". `analysis/rf_pilot.py` imports these; a second
+# hand-copied format string would drift on the first column-width tweak and the
+# side-by-side reading is the whole point of the requirement.
+A9_TRAJECTORY_HEADER = (f"  {'run':<10}{'step':>10}{'silent':>10}{'spike rate':>13}"
+                        f"{'saturated':>11}{'||W||':>9}{'|W@mu+b|':>11}"
+                        f"{'offset std':>12}{'frozen drift':>14}")
+
+
+def a9_trajectory_row(label: str, row: dict) -> str:
+    """One line of the A9 trajectory table. `row["step"]` may be an int or a
+    string (`"init"`), and `row["frozen_drift"]` may be None for a model that was
+    built rather than loaded -- both render at the same widths, so a table that
+    mixes them still lines up with the committed one."""
+    drift = row["frozen_drift"]
+    drift_s = "n/a (built)" if drift is None else f"{drift:.1e}"
+    return (f"  {label:<10}{row['step']:>10}{row['silent']:>9.4%}"
+            f"{row['spike_rate']:>13.6f}{row['saturated']:>10.4%}"
+            f"{row['w_norm']:>9.4f}{row['dc_norm']:>11.4f}"
+            f"{row['offset_std']:>12.4f}{drift_s:>14}")
 
 
 # --------------------------------------------------------------------------- #
@@ -234,6 +258,87 @@ def nesting_and_newly_dead(mask_sequence: list):
     for prev, nxt in zip(mask_sequence, mask_sequence[1:]):
         newly_dead.append(int((nxt & ~prev).sum()))
     return newly_dead, all(n == 0 for n in newly_dead)
+
+
+def dc_offset_factor(beta, omega=None):
+    """Per-unit factor turning a CONSTANT input current into the standing membrane
+    offset it induces -- the REAL PART of the complex DC gain (§23.10(b)).
+
+    WHY THE REAL PART AND NOT THE MAGNITUDE, which is the quantity §23.3's table
+    and G0a are stated in. A resonate-and-fire unit carries a two-dimensional
+    state `(u, v)`, and `|1/(1 - beta*e^{i w})|` measures how much DC energy that
+    two-dimensional state holds. But spiking is thresholded on `u` ALONE, so what
+    actually shifts a unit's firing threshold is the `u`-component of the
+    steady state, i.e. the real part
+
+        (1 - beta*cos w) / (1 - 2*beta*cos w + beta^2)
+
+    which is strictly smaller than the magnitude at every frequency where the
+    pole is genuinely complex. §23.10(b) records that reporting the magnitude in
+    the offset column instead would overstate the resonate-and-fire arm's standing
+    offset by roughly the same factor H10 predicts it to FALL by -- an arithmetic
+    error indistinguishable from the result it was measuring. Both quantities are
+    reported (see `checkpoint_operating_point`); this is the one the offset column
+    uses.
+
+    `omega=None` IS the LIF arm and returns the scalar `1/(1 - beta)`. Not a
+    tensor of zeros: `SpikingReservoir.omega` deliberately RAISES on a LIF
+    reservoir rather than handing back zeros, precisely so rf-specific analysis
+    cannot run silently against the control arm, and this signature mirrors that.
+
+    THE `w == 0` BRANCH IS EXPLICIT, AND IT IS NOT REDUNDANT. At `cos w = 1` the
+    general expression is algebraically `(1-beta)/(1-beta)^2 = 1/(1-beta)`, but
+    IEEE-754 does not respect that algebra: `(1-beta)` and `(1-beta)^2` are each
+    rounded, and their quotient can miss `1/(1-beta)` by an ULP -- in float64 it
+    does. The whole point of §23.2's construction is that LIF is the `w = 0` point
+    of this family BIT FOR BIT, so the zero entries are taken from the LIF formula
+    directly and the identity becomes a tested property (tests/test_rf_pilot.py)
+    rather than an appeal to the algebra. The general branch is written over
+    `1 - cos w` rather than `cos w` for the same reason it is written that way in
+    the numerator: at small omega, `1 - cos w` is the well-conditioned form and
+    subtracting two nearly-equal numbers is not.
+    """
+    beta = float(beta)
+    lif_factor = 1.0 / (1.0 - beta)
+    if omega is None:
+        return lif_factor
+    omega = torch.as_tensor(omega)
+    one_minus_cos = 1.0 - torch.cos(omega)
+    d = 1.0 - beta
+    general = (d + beta * one_minus_cos) / (d * d + 2.0 * beta * one_minus_cos)
+    return torch.where(one_minus_cos == 0,
+                       torch.full_like(general, lif_factor), general)
+
+
+def induced_membrane_offset(drive, beta, omega=None):
+    """The standing per-unit membrane offset a DC input current induces.
+
+    `drive` is `W_in @ (W @ mu + b)` -- the constant part of the reservoir's input
+    current, the quantity §12 measured at std 0.943583 against a threshold of 1.0
+    for the legacy init. This is a LINEARISED input-driven estimate in both neuron
+    models: it omits the frozen recurrent TT term, so it explains the silent
+    fraction's direction and magnitude without equalling it.
+
+    THE ZERO-FREQUENCY UNITS ARE A DIVISION, NOT A MULTIPLICATION BY
+    `dc_offset_factor`, and that is load-bearing rather than stylistic.
+    `x / (1-beta)` and `x * (1/(1-beta))` differ by up to one ULP because the
+    reciprocal is itself rounded. Two things ride on closing that gap:
+
+      * A9's trajectory table is committed to four decimal places in
+        `results_v2_health.txt` and this change has to reproduce it byte for
+        byte, so the LIF arm has to keep the exact expression it always had;
+      * §23.2's claim is that LIF is the `w = 0` point of the resonate-and-fire
+        family BIT FOR BIT, and G0e-ii tests exactly that at the cell. Carrying
+        the same property up to the reported column costs one elementwise select
+        on a diagnostic path and makes "an rf reservoir drawn at omega == 0
+        reports the identical offset column" a tested identity rather than an
+        agreement to within rounding.
+    """
+    denominator = 1.0 - float(beta)
+    if omega is None:
+        return drive / denominator
+    return torch.where(torch.as_tensor(omega) == 0, drive / denominator,
+                       drive * dc_offset_factor(beta, omega))
 
 
 def band_verdict(value: float, confirmed_below: float, falsified_at_or_above: float) -> str:
@@ -339,17 +444,63 @@ def a7_run_stats(checkpoint_dir: str, arm: str, seed: int, names: list, max_ckpt
 def checkpoint_operating_point(seed: int, ckpt_path: str, obs: torch.Tensor, mu: torch.Tensor):
     """One checkpoint's A9 measurements plus the frozen-buffer drift found while
     reconstructing the model to take them (see module docstring for why
-    `"legacy", 1.0` are hardcoded here rather than read off the checkpoint)."""
-    model, drift = reservoir_at(seed, "legacy", 1.0, ckpt_path)
+    `"legacy", 1.0` are hardcoded here rather than read off the checkpoint).
+
+    THE NEURON MODEL, UNLIKE `embed_init_mode`/`embed_scale`, IS READ OFF THE
+    CHECKPOINT (§23). The module docstring's argument for hardcoding the embedding
+    arguments turns on `load_state_dict` overwriting whatever they produced; that
+    argument does NOT extend to `neuron_model`, because an `rf` checkpoint carries
+    five `reservoir.rf.*` buffers a LIF model does not have, so the load REFUSES
+    the file instead of overwriting it. There is no build-it-wrong-and-let-the-
+    load-fix-it path here, which is why the file has to be opened before anything
+    is constructed. `neuron_config_from_checkpoint` supplies lif/2.0/32.0 for the
+    400 committed files that predate the keys, so A7 and A9 on `checkpoints_v2/`
+    are byte-for-byte what they were. The extra `torch.load` costs ~5 ms against
+    the ~1.8 s this function then spends stepping the fixture.
+
+    BOTH DC QUANTITIES ARE REPORTED, per §23.10(b):
+      `dc_gain_mean`          -- mean of `|1/(1 - beta*e^{i w})|`, the MAGNITUDE.
+                                 This is what §23.3's table quotes and what G0a
+                                 gates on, and it is a flat 1/(1-beta) = 10.0 on
+                                 the LIF arm.
+      `dc_offset_factor_mean` -- mean of the REAL PART, which is what actually
+                                 shifts a threshold applied to `u` alone, and
+                                 hence what `offset_std` below is computed with.
+    They coincide exactly on the LIF arm and the real part is the smaller of the
+    two wherever the pole is genuinely complex; reporting only the magnitude in
+    the offset column would overstate the rf arm's standing offset by roughly the
+    factor H10 predicts it to fall by.
+    """
+    neuron = neuron_config_from_checkpoint(load_ckpt(ckpt_path))
+    model, drift = reservoir_at(seed, "legacy", 1.0, ckpt_path, **neuron)
     silent, spike_rate, saturated = silent_fraction(model, obs)
     weight = model.embedding.weight.detach()
     bias = model.embedding.bias.detach()
     dc = weight @ mu + bias
-    offset = (model.reservoir.W_in @ dc) / (1.0 - float(model.reservoir.lif.beta))
+    beta = float(model.reservoir.lif.beta)
+    # `SpikingReservoir.omega` RAISES on a LIF reservoir rather than returning
+    # zeros, so `None` -- not `getattr(..., None)` on a tensor -- is what the LIF
+    # arm hands the offset formula, and the LIF branch there is the historical
+    # division, unchanged to the ULP.
+    omega = model.reservoir.omega if neuron["neuron_model"] == "rf" else None
+    offset = induced_membrane_offset(model.reservoir.W_in @ dc, beta, omega)
+    # Both DC summaries are reduced from a full (reservoir_size,) tensor in the
+    # model's own dtype, mirroring what `SpikingReservoir.dc_gain` does and for
+    # the same stated reason: one code path, not two. It also makes "the two
+    # quantities coincide on the LIF arm" exactly true rather than true to five
+    # decimals -- beta is stored as float32, so 1/(1-beta) is 9.999998 and not the
+    # 10.0 §23.3's prose quotes, and two paths rounding that differently would
+    # look like a real discrepancy.
+    dc_gain = model.reservoir.dc_gain()
+    factor = (dc_offset_factor(beta, omega) if omega is not None
+              else torch.full_like(dc_gain, dc_offset_factor(beta, None)))
     return {
         "silent": silent, "spike_rate": spike_rate, "saturated": saturated,
         "w_norm": weight.norm().item(), "dc_norm": dc.norm().item(),
         "offset_std": offset.std().item(), "frozen_drift": drift,
+        "neuron_model": neuron["neuron_model"],
+        "dc_gain_mean": float(dc_gain.mean()),
+        "dc_offset_factor_mean": float(factor.mean()),
     }
 
 
@@ -472,8 +623,7 @@ def section_a9(checkpoint_dir: str, arm: str, seeds: list, max_ckpts):
 
     results = []
     all_drifts = []
-    print(f"\n  {'run':<10}{'step':>10}{'silent':>10}{'spike rate':>13}{'saturated':>11}"
-          f"{'||W||':>9}{'|W@mu+b|':>11}{'offset std':>12}{'frozen drift':>14}")
+    print("\n" + A9_TRAJECTORY_HEADER)
     print("  " + "-" * 100)
     for seed in seeds:
         r = a9_run_stats(checkpoint_dir, arm, seed, obs, mu, max_ckpts)
@@ -484,10 +634,21 @@ def section_a9(checkpoint_dir: str, arm: str, seeds: list, max_ckpts):
         for i, row in enumerate(r["trajectory"]):
             label = f"seed{seed}" if i == 0 else ""
             all_drifts.append(row["frozen_drift"])
-            print(f"  {label:<10}{row['step']:>10}{row['silent']:>9.4%}"
-                  f"{row['spike_rate']:>13.6f}{row['saturated']:>10.4%}"
-                  f"{row['w_norm']:>9.4f}{row['dc_norm']:>11.4f}"
-                  f"{row['offset_std']:>12.4f}{row['frozen_drift']:>14.1e}")
+            print(a9_trajectory_row(label, row))
+        # §23.10(b) requires BOTH DC quantities be reported. On the LIF arm they
+        # are the same constant for every unit of every checkpoint, so printing
+        # them would add a redundant line to a table whose committed form
+        # (`results_v2_health.txt`) this module must still reproduce byte for
+        # byte -- the annotation is therefore emitted only where the two differ,
+        # i.e. on a run with a genuinely rotated pole.
+        rotated = [row for row in r["trajectory"] if row["neuron_model"] != "lif"]
+        if rotated:
+            head = rotated[0]
+            print(f"  {'':<10}neuron_model={head['neuron_model']}  "
+                  f"mean DC gain |1/(1-beta*e^iw)| = {head['dc_gain_mean']:.4f} "
+                  f"(LIF: 10.0)  mean real-part factor = "
+                  f"{head['dc_offset_factor_mean']:.4f}  "
+                  f"-- the offset column above uses the REAL PART (§23.10(b))")
         note = "" if r["final_is_expected_final_step"] else (
             f"  (PARTIAL RUN -- final on disk is step {r['final']['step']}, "
             f"expected final is {EXPECTED_FINAL_STEP})")

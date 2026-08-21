@@ -14,9 +14,23 @@ weights here would cost CPU the constraint sheet asks this suite not to spend.
 Every reference value below is hand-derivable from the fixture as constructed,
 not merely "the code's own answer" -- the same standard
 `tests/test_aggregate_results.py` holds itself to.
+
+ONE EXCEPTION TO "no real checkpoint I/O", added with the resonate-and-fire
+pilot (docs/EXPERIMENT_LOG.md §23) and argued for rather than assumed.
+`checkpoint_operating_point` now has to read a checkpoint's OWN recorded
+`neuron_model` and build the matching model, because an `rf` checkpoint carries
+five `reservoir.rf.*` buffers a LIF model does not have and `load_state_dict`
+refuses it outright -- there is no "build it wrong and let the load fix it" path
+the way there is for every other label. That behaviour is a property of a real
+state-dict round trip and cannot be faked on a synthetic tensor, so
+`TestCheckpointOperatingPointReadsTheNeuronModel` writes genuine (2.8 MB,
+tmp_path, session-scoped) checkpoints and loads them back. The v2 matrix is no
+longer training, so the CPU objection in the paragraph above no longer applies to
+these few seconds.
 """
 import os
 
+import numpy as np
 import pytest
 import torch
 
@@ -27,12 +41,14 @@ from analysis.reservoir_health import (
     A9_FALSIFIED_AT_OR_ABOVE,
     AMBIGUOUS_PHRASE,
     band_verdict,
+    checkpoint_operating_point,
     dead_mask_from_exp_avg_sq,
     find_run,
     nesting_and_newly_dead,
     parse_seed_spec,
     select_subset,
 )
+from analysis.pilot_diagnostics import reservoir_at
 
 
 # --------------------------------------------------------------------------- #
@@ -313,3 +329,102 @@ class TestFindRunGracefulSkip:
         assert status_baseline == "missing_dir"
         assert status0 == "ok"
         assert len(ckpts0) == 1
+
+
+# --------------------------------------------------------------------------- #
+# §23: a checkpoint's OWN neuron model decides which model gets built
+# --------------------------------------------------------------------------- #
+
+BETA = 0.9           # §23.2: the rf path holds the LIF path's own beta
+LIF_DC_GAIN = 10.0   # 1/(1-beta), the value §23.3 quotes for the LIF arm
+
+
+def _write_checkpoint(path, seed, neuron_model, stamp_keys):
+    """A real checkpoint for `seed`, shaped the way `training.train.save_checkpoint`
+    writes one -- optionally WITHOUT the §23 keys, which is exactly the shape of
+    the 400 committed files under `checkpoints/` and `checkpoints_v2/`."""
+    model, _ = reservoir_at(seed, "centered", 3.0, neuron_model=neuron_model)
+    ckpt = {"model": model.state_dict(), "step": 1_000_064,
+            "arm": "reservoir", "seed": seed}
+    if stamp_keys:
+        ckpt.update({"neuron_model": neuron_model,
+                     "rf_period_min": 2.0, "rf_period_max": 32.0})
+    torch.save(ckpt, str(path))
+    return path
+
+
+@pytest.fixture(scope="module")
+def checkpoints(tmp_path_factory):
+    d = tmp_path_factory.mktemp("rf_neuron_model")
+    return {
+        # An rf run, labelled the way the post-§23 train.py labels one.
+        "rf": _write_checkpoint(d / "rf.pt", 0, "rf", stamp_keys=True),
+        # A pre-§23 file: LIF weights, and NONE of the three keys. Backward
+        # compatibility for these is not optional -- 400 of them exist, and the
+        # published v1/v2 results are unreadable without them.
+        "legacy_unlabelled": _write_checkpoint(d / "old.pt", 0, "lif",
+                                               stamp_keys=False),
+    }
+
+
+@pytest.fixture(scope="module")
+def short_obs():
+    # 8 real-shaped steps: this block tests which model gets CONSTRUCTED, not what
+    # the spike statistics are, so the window only has to be non-empty.
+    rng = np.random.default_rng(0)
+    return torch.as_tensor(rng.normal(0.0, 0.3, size=(8, 12)), dtype=torch.float32)
+
+
+@pytest.fixture(scope="module")
+def mu():
+    return torch.zeros(12)
+
+
+class TestCheckpointOperatingPointReadsTheNeuronModel:
+    def test_an_unlabelled_checkpoint_reads_back_as_lif(self, checkpoints, short_obs, mu):
+        # The backward-compatibility contract, stated as a test: a missing key
+        # means "lif", so a pre-§23 file measures exactly as it did before the
+        # flag existed.
+        row = checkpoint_operating_point(0, str(checkpoints["legacy_unlabelled"]),
+                                         short_obs, mu)
+        assert row["neuron_model"] == "lif"
+        # approx, not ==: beta is stored as a float32 buffer, so the LIF DC gain
+        # is 1/(1 - 0.89999997615814208984375) = 9.999998, not the round 10.0
+        # §23.3's prose quotes. The prose figure is the exact-arithmetic value.
+        assert row["dc_gain_mean"] == pytest.approx(LIF_DC_GAIN, abs=1e-5)
+        assert row["frozen_drift"] == 0.0
+
+    def test_an_rf_checkpoint_loads_at_all(self, checkpoints, short_obs, mu):
+        # The load IS the test. An rf checkpoint carries reservoir.rf.omega,
+        # cos_omega, sin_omega, beta and threshold; a LIF model has none of them,
+        # so building the wrong one raises from load_state_dict rather than
+        # quietly measuring something else.
+        row = checkpoint_operating_point(0, str(checkpoints["rf"]), short_obs, mu)
+        assert row["neuron_model"] == "rf"
+        assert row["frozen_drift"] == 0.0
+
+    def test_the_rf_dc_gain_is_far_below_the_lif_value(self, checkpoints, short_obs, mu):
+        # §23.3's H10 as a construction property: over T ~ logU[2, 32] the mean DC
+        # gain must collapse from 10.0 towards ~1.78. Asserted against G0a's own
+        # gate (< 3.0) rather than a pinned figure, because the exact value is a
+        # draw from the reservoir's generator.
+        row = checkpoint_operating_point(0, str(checkpoints["rf"]), short_obs, mu)
+        assert row["dc_gain_mean"] < 3.0
+
+    def test_both_dc_quantities_are_reported(self, checkpoints, short_obs, mu):
+        # §23.10(b): "Both quantities are reported." The magnitude is what G0a
+        # gates on; the real part is what the offset column uses, and it is the
+        # smaller of the two wherever the pole is genuinely complex.
+        row = checkpoint_operating_point(0, str(checkpoints["rf"]), short_obs, mu)
+        assert row["dc_offset_factor_mean"] < row["dc_gain_mean"]
+
+    def test_a_lif_checkpoints_two_dc_quantities_coincide(self, checkpoints, short_obs, mu):
+        # At w = 0 the pole is real, so the magnitude and the real part are the
+        # same number -- the sense in which the rf family CONTAINS the LIF arm.
+        # EXACT equality, because both are reduced from a full tensor in the
+        # model's own dtype through one code path; two paths rounding float32
+        # beta differently would show up here as a phantom discrepancy.
+        row = checkpoint_operating_point(0, str(checkpoints["legacy_unlabelled"]),
+                                         short_obs, mu)
+        assert row["dc_offset_factor_mean"] == row["dc_gain_mean"]
+        assert row["dc_gain_mean"] == pytest.approx(LIF_DC_GAIN, abs=1e-5)
