@@ -1,7 +1,8 @@
 # Roadmap Phase 2 — Multi-Game Generalization on the GRU Architecture
 
-Status: **design proposal, nothing implemented, nothing run.** No training job has been
-started under this document and none should be until it is reviewed.
+Status: **design proposal, nothing implemented, no training run.** The testbed-viability
+probe of §13 has been executed (§14) — seconds of emulation, no training, no checkpoints.
+No training job has been started under this document and none should be until it is reviewed.
 Date: 2026-08-21
 Author: Andrea Alfano ("Alfanowski"), with research support from Claude (Opus 5)
 Scope: `docs/DESIGN.md` §1.1 **Roadmap Phase 2** — multi-game generalization within Game
@@ -267,6 +268,11 @@ This also strengthens the case for **task-specific reward normalisation (§6.4)*
 whose reward functions have different *forms*, not just different scales, are exactly the
 situation that normalisation exists for.
 
+> **MEASURED 2026-08-21 (§14.3).** Confirmed, and worse than this section guessed: the camera
+> term is *exactly* free — `level_block` advances by an identical +7 over 240 frames whether
+> the player holds right or presses nothing. 78% of 2-3's progress reward and 50% of 4-3's
+> accrues to a policy that does nothing at all.
+
 ### 4.2 Why this is worth doing rather than a consolation prize
 
 - **It costs no new ROM and no new game's RAM map.** `envs/ram_map.py` is game-wide, not
@@ -349,6 +355,12 @@ saying plainly rather than discovering later:
 worked with `envs/ram_scan_tool.py` under the same discipline that produced
 `envs/ram_map.py`. It is the substance of §13's recommended first task.
 
+> **RESOLVED 2026-08-21 (§14.1, §14.4).** All four checked. `0xC0AB` re-bases per level
+> (12 platformer / 14 vehicle) but its monotonic-camera semantics are exactly what makes the
+> autoscroll problem bite; `0xC202` does hold the craft's X; the timer does run in the
+> vehicle stages. The on-ground heuristic is not merely meaningless in free flight — it is
+> **actively misleading**, reporting "grounded" whenever the player stops pressing.
+
 ---
 
 ## 5. Phase 2b — cross-title, the roadmap's actual Phase 2
@@ -362,6 +374,13 @@ Everything in §4 stays; a second game adds, per title: an empirically-confirmed
 that game's observation distribution. The coupling audit is unambiguous that this is the
 expensive part and that no amount of software architecture makes it cheap — it is
 reverse-engineering work.
+
+> **REVISED UPWARD 2026-08-21 (§14.7).** More expensive than this paragraph assumed. Kirby's
+> first level is not traversable by hold-right, by right+jump, by right+fly, or by uniform
+> random play, so the blind monotonic scan that discovered Mario's map **cannot discover
+> Kirby's progress addresses**. That pass needs human-recorded input traces or save states
+> captured deeper in the level. Kirby's health, lives, X, Y and score addresses *did* all
+> confirm cleanly (§14.6) — it is specifically the progress signal that is hard.
 
 ### 5.2 One lever that materially reduces it
 
@@ -555,6 +574,11 @@ per-game heads or masks; Gato (Reed et al. 2022) goes further and flattens every
 into one token vocabulary. Per-game output heads are the standard *alternative* (Continual
 World uses them), and they are rejected here for the same reason per-task input adapters
 are: they are parameter isolation, which makes Q1 vacuous.
+
+> **REQUIRED, not optional, as of 2026-08-21 (§14.4, §14.6).** `up` and `down` do nothing in
+> the platformer levels and *move the craft* in 2-3 and 4-3 (dy −59 holding up); Kirby needs
+> them too (up = fly, down = duck/swallow). Phase 1's ten actions cannot play the vehicle
+> stages at all.
 
 **The exact membership of that set is OPEN** and should be fixed the way `DESIGN.md` §11
 fixed Phase 1's: *"finalized during Phase 0 once PyBoy's actual input handling … is
@@ -970,9 +994,11 @@ not thereby solved.
 | Risk | Severity | Mitigation |
 |---|---|---|
 | One 132,715-parameter policy simply cannot hold two tasks | High — **this is the experiment** (Q1) | The controls (§2.2) make a negative answer informative rather than a failed run, exactly as `DESIGN.md` §5's control did for Phase 1 |
-| Progress-based reward is degenerate in the autoscroll vehicle stages (§4.1.1) | **High, and already realised** | Vehicle stages get their own reward definition (survival + score delta); "define and validate it" is its own plan task with its own acceptance test |
-| `read_level_progress()` / `0xC0AB` semantics break in the vehicle stages (§4.4) | High | Empirical confirmation checklist scoped to 2-3 and 4-3, with `envs/ram_scan_tool.py`, **before** the testbed depends on it — §13's first task |
-| PyBoy save-state loading is not bit-identically deterministic | High — it would invalidate Phase 1's whole statistical design applied to Phase 2 | Own load/replay/hash check; nobody has published such a claim, so it must be measured, not inherited |
+| Progress-based reward is degenerate in the autoscroll vehicle stages (§4.1.1) | **High — MEASURED §14.3: the camera term is 100% free, 78%/50% of total** | Vehicle stages get their own reward definition (survival + score delta); "define and validate it" is its own plan task with its own acceptance test |
+| Kirby's progress addresses cannot be found by the blind scan that found Mario's (§14.7) | **High — MEASURED**, no simple policy traverses level 1 | Discovery pass switches to human-recorded input traces or deep save states; Kirby's reward leans on score delta and survival, and slot 0 may be weak for Kirby — to be disclosed, not hidden |
+| The on-ground slot reports "grounded" for "idle" in free-flight stages (§14.4) | Medium — silent | Keep the slot (task-agnostic agents must survive distribution shift) but never let a reward or termination rule read it |
+| ~~`read_level_progress()` / `0xC0AB` semantics break in the vehicle stages~~ | ~~High~~ **CLOSED §14.1/§14.4** | Checked: `0xC0AB` re-bases per level and `0xC202` holds the craft's X. The semantics hold; the autoscroll row above is the real problem |
+| ~~PyBoy save-state loading is not bit-identically deterministic~~ | ~~High~~ **CLOSED §14.2** | Measured: identical WRAM+HRAM digests across same-process reload, fresh-process reload and boot-from-power-on, on 1-1 and 2-3. `timer_div` randomisation does not affect it |
 | A shared novelty buffer pays the agent for switching game (§7.5) | High if unnoticed, trivial to prevent | One `NoveltyGate` per task; recorded here so a shared gate reads as a regression |
 | Two tasks' checkpoints collide on `{arm}_seed{N}/` (§9 item 4) | Medium — silent matrix corruption | A task coordinate threaded through the checkpoint dict, directory naming and the aggregation regex; this failure class was already caught once (`EXPERIMENT_LOG.md` §19.4) |
 | Reward-scale imbalance makes one task dominate the gradient | Medium | Pre-registered fixed per-task reward scale (§6.4); PopArt named as the fallback |
@@ -1011,6 +1037,11 @@ existing documents; everything not listed here is decided above with its rationa
   platformer, different world, water), and optionally **2-3** (far transfer: the Marine Pop
   autoscroller — which brings §4.1.1's reward work with it). Two tasks vs. three costs ~1.6×
   the compute (§10).
+  **Evidence added 2026-08-21 (§14.5):** 2-1 kills a hold-right policy at frame 235 against
+  1-1's 336, burning both lives inside eight seconds — so the 1-1 → 2-1 shift is real rather
+  than cosmetic, which is the property the near-transfer task needed. Adding 2-3 now also
+  carries a *measured* cost, not just a suspected one: its reward has to be rebuilt from
+  scratch (§14.3).
 - **OPEN-4 — The exact union action set** (§6.3). *Recommended: do not decide it on paper.*
   Fix it empirically in the implementation plan's first task, the way `DESIGN.md` §11 fixed
   Phase 1's.
@@ -1023,6 +1054,12 @@ existing documents; everything not listed here is decided above with its rationa
 ---
 
 ## 13. Recommended next step, bounded
+
+> **EXECUTED 2026-08-21 — results in §14.** The probe specified below was authorised and has
+> been run: `scripts/phase2_viability_probe.py`, raw output at `results_phase2_probe.json`,
+> ~6 seconds of emulation, no training and no checkpoints. The specification is kept here
+> unedited so §14's results can be read against what was actually asked for. **Nothing beyond
+> it has been started.**
 
 **Not** "start training". The bounded next step, if this document is accepted, is:
 
@@ -1067,7 +1104,204 @@ plan existed and were reviewed before any run began.
 
 ---
 
-## 14. Out of scope for this document
+## 14. Testbed-viability probe — RESULTS (run 2026-08-21)
+
+The probe §13 proposed has been **run**. It is `scripts/phase2_viability_probe.py`, its raw
+output is committed at `results_phase2_probe.json`, and it costs **~6 seconds** of emulation
+end to end. No training was run and no checkpoint was written.
+
+Every check is behavioural. "The status bar says 2-3" was not accepted as evidence that
+level 2-3 loaded; "four submarine sprites are on screen and zero Mario sprites are" was —
+using tile identifiers taken from PyBoy's own wrapper, which is a channel independent of
+every RAM address in question.
+
+**Headline: five checks pass cleanly, one passes with a number that changes a reward
+design, and one returns a genuine negative that raises Phase 2b's cost.**
+
+### 14.1 SML-1 — the levels really load. PASS
+
+| requested | `0xFFB4` agrees | Mario sprites | submarine | plane | independent verdict | `level_block` at start |
+|---|---|---|---|---|---|---|
+| 1-1 | yes | 4 | 0 | 0 | **mario** | 12 |
+| 2-1 | yes | 4 | 0 | 0 | **mario** | 12 |
+| 2-3 | yes | 0 | **4** | 0 | **submarine** | 14 |
+| 4-3 | yes | 0 | 0 | **4** | **plane** | 14 |
+
+`start_game(world_level=…)` genuinely loads the level, vehicle stages included. §4.3's
+ranking was right and §4.3's rejection of the `0xFFB4` poke needs no revisiting.
+
+**This also closes §4.4's second unknown:** `0xC0AB` **re-bases per level** (12 on the
+platformer levels, 14 on the vehicle ones), so `read_level_progress()` starts from a small
+per-level baseline rather than accumulating across levels.
+
+### 14.2 SML-2 — save states are bit-identically deterministic. PASS, 5/5, on two levels
+
+Save states are 143,103 bytes. A 300-frame scripted replay from a state captured at the
+level start produces **one identical WRAM+HRAM digest** across every condition tested, on
+both 1-1 and 2-3:
+
+| check | result |
+|---|---|
+| reload into the *same* emulator, ×3 | identical |
+| reload into a *fresh* emulator, ×3 | identical |
+| same-process digest == fresh-process digest | identical |
+| boot from power-on, ×3 | identical |
+| boot-from-power-on == save-state path | identical |
+
+**And `timer_div` turns out not to matter, which was checked rather than assumed.** PyBoy
+randomises the DIV register by default (`timer_div=None`); pinning it to 0 produces the
+*same* digest, over 4 boots each. Pinning it is therefore free insurance, not a
+requirement — recorded so nobody later cargo-cults the flag or, worse, omits it believing it
+was load-bearing.
+
+**Phase 1's determinism assumption survives into Phase 2a intact.** This was the check most
+capable of invalidating §4 outright, and it did not.
+
+### 14.3 SML-3 — the autoscroll problem is real, and worse than §4.1.1 guessed. CONFIRMED
+
+240 frames, idle (pressing nothing) versus holding right:
+
+| level | idle Δprogress | hold-right Δprogress | **free fraction** | idle Δ`level_block` | hold-right Δ`level_block` |
+|---|---|---|---|---|---|
+| 1-1 | 0 | +127 | **0.00** | 0 | +6 |
+| 2-3 | +112 | +143 | **0.78** | **+7** | **+7** |
+| 4-3 | +112 | +222 | **0.50** | **+7** | **+7** |
+
+§4.1.1 predicted "mostly free". The measurement is sharper than that and the sharper version
+is the one that matters:
+
+> **The camera term of `read_level_progress()` is *exactly* free in the vehicle stages.**
+> `level_block` advances by the same +7 whether the player holds right or presses nothing at
+> all. The only player-responsive component left is `ADDR_MARIO_X`, the craft's *screen* X,
+> which is bounded by the screen and saturates.
+
+So it is not that a progress reward in 2-3 is noisy — it is that its unbounded component is
+100% uncorrelated with the policy, and its correlated component cannot exceed one screen
+width. **A vehicle-stage reward must be built on survival and score, not progress.** §4.1.1's
+conclusion stands and is now quantified rather than argued.
+
+### 14.4 SML-4 — the vehicle stages need `up`/`down`, measured. §6.3 CONFIRMED
+
+Displacement after holding each direction for 60 frames:
+
+| level | right | left | up | down |
+|---|---|---|---|---|
+| 1-1 | dx +31 | dx −13 | — | — |
+| 2-1 | dx +31 | dx −36, dy +51 | — | — |
+| 2-3 | dx +59 | dx −36 | **dy −59** | — |
+| 4-3 | dx +59 | dx −36 | **dy −59** | **dy +14** |
+
+`up` and `down` do **nothing** in the platformer levels and **move the craft** in the vehicle
+stages. §6.3's union action space stops being a design preference and becomes a requirement:
+Phase 1's ten actions cannot play 2-3 or 4-3 at all.
+
+Two more §4.4 unknowns close here: **`0xC202` does hold the craft's X** (it responds to
+left/right in both vehicle stages), and **the level timer does run in the vehicle stages**
+(−6 over 240 frames, identical to the platformer levels).
+
+The fourth is worse than "meaningless": **the on-ground heuristic is actively misleading in
+free-flight.** `ON_GROUND_STILL_FRAMES` infers contact from Y holding still, and in a vehicle
+stage Y holds still exactly when the player stops pressing — so slot 4 would report
+"grounded" for "idle". Keep the slot (a task-agnostic agent must cope with distribution
+shift) but never let a reward or termination rule read it.
+
+### 14.5 SML-5 — how fast a naive rightward policy dies, and the artefact it explains
+
+The first probe run reported *zero* progress for holding right in 2-1, which looked like a
+broken level. It was a **death-and-reload artefact**: progress had collapsed back to the
+level start by the time the window closed. Traced properly over 480 frames:
+
+| level | first death (frame) | lives left after 480f | peak progress gain |
+|---|---|---|---|
+| 1-1 | 336 | 1 | +127 |
+| 2-1 | **235** | **0** | +95 |
+| 2-3 | none | 2 | +415 |
+| 4-3 | 443 | 1 | +254 |
+
+**2-1 punishes the rightward reflex harder than 1-1** — it kills a hold-right policy in
+about two-thirds the time and burns both lives inside eight seconds. That is a *point in
+2-1's favour* as the near-transfer task (§12, OPEN-3): the shift is real rather than
+cosmetic, and a policy that merely learned "hold right" on 1-1 will visibly fail there.
+
+### 14.6 KDL-1 and KDL-2 — Kirby binds and its published addresses hold. PASS
+
+- **The wrapper binds.** `pyboy.game_wrapper` is `GameWrapperKirbyDreamLand` — the 15-character
+  `cartridge_title` truncation §13 flagged is a non-issue. `start_game()` reaches live
+  gameplay and the behavioural control gate passes (X 40 → 76 holding right → 36 holding left).
+- **The published addresses behave as documented**, and are hereby hypotheses *confirmed by
+  observation* rather than adopted from a wiki:
+
+| address | source | observed |
+|---|---|---|
+| `0xD086` health | PyBoy wrapper | 6 at start, falls to 5/4 on damage; wrapper agrees |
+| `0xD089` lives | PyBoy wrapper | raw **5**; wrapper reports **4** — **it subtracts one** |
+| `0xD05C` X | DataCrystal | +36 holding right, −16 holding left |
+| `0xD05D` Y | DataCrystal | −75 holding up (Kirby flies), +25 down, −30 on A (jump) |
+| `0xD051` scroll | DataCrystal | ±2 with travel; behaves like a camera counter |
+| `0xD070`–`0xD073` score | PyBoy wrapper | 0 at start, climbs with enemies defeated |
+
+The lives off-by-one is recorded because it is exactly the kind of detail that silently
+corrupts an observation slot: `envs/ram_map.py`'s Mario `read_lives` returns the raw BCD
+value, so a Kirby env that copies the wrapper's convention and a Mario env that does not
+would put two different quantities in the same shared slot 6 (§6.1).
+
+**Kirby also needs `up`/`down`** — `up` is fly, `down` is duck/swallow — which is the same
+conclusion §14.4 reached from the vehicle stages, arrived at independently.
+
+### 14.7 KDL-3 — the genuine negative: Kirby's first level is not traversable by any simple policy
+
+This is the finding that justifies having run a probe at all.
+
+**The good half.** `0xD051` behaves like a real camera counter, and Kirby's X **pins at 76**
+once the camera locks — structurally identical to Mario's X pinning at 81. So §6.1 slot 0's
+two-part composition (unwrapped coarse camera term + fine local X) is the right *shape* for
+Kirby.
+
+**The bad half.** Nothing traverses the level:
+
+| policy | max `scroll_x` reached |
+|---|---|
+| hold right (2,400 frames) | 13 |
+| right + jump every 40 frames | 30 |
+| right + fly (tap up) | **71**, then stalled at x=152 for a further 5,400 frames |
+| uniform random over the 20-action union space, 2,000 agent steps × 4 seeds | 3, 11, 12, 21 |
+
+Meanwhile **score climbs freely under random play** (0 → 1,000–2,000) and health falls, so
+Kirby's *dense* signals are score and survival, not spatial progress.
+
+Three consequences, none of which unseat Kirby as the choice:
+
+1. **The RAM-discovery method does not transfer.** Mario's map was found with
+   `envs/ram_scan_tool.py`'s blind hold-right monotonic scan, and that method only works if
+   holding right makes the player travel. For Kirby it does not. The discovery pass needs
+   **human-recorded input traces or save states captured deeper in the level** — a different
+   and more manual technique. §9's item 8 gets more expensive.
+2. **Kirby's reward should lean on score delta and survival**, not on a Mario-style progress
+   term. Slot 0 of the shared schema may be weak or near-constant for Kirby, which is
+   informative in itself and must be disclosed rather than papered over.
+3. **`0xD051`'s wrap behaviour is undetermined.** It never exceeded 71 in 7,200 frames, so
+   whether it wraps mod 256 (like Mario's `0xFFA4`) or is already coarse (like `0xC0AB`) is
+   unknown. It cannot be assumed either way.
+
+**Stated limitation.** The probe established *that* traversal stalls and *where* (x = 152,
+`scroll_x` = 71); it did **not** establish *why*. Pillow is not installed in this virtualenv,
+so no screenshot was captured and the obstacle was not identified visually. That is a known
+gap, cheap to close, and not closed.
+
+### 14.8 Verdict
+
+**Phase 2a is viable and is not invalidated.** The check most capable of killing it —
+save-state determinism — passed on every variant tested, and the level-start mechanism works
+on all four candidate levels including the vehicle stages.
+
+Three things the probe changed rather than confirmed, all folded in above: the vehicle-stage
+reward must be survival-and-score (§14.3), the union action space is required rather than
+preferred (§14.4), and **Phase 2b's Kirby RAM work is harder than §5.1 estimated** (§14.7).
+None of them changes the sequencing in §4.2.
+
+---
+
+## 15. Out of scope for this document
 
 - **Roadmap Phase 3 (GBA) and Phase 4 (Fire Red).** Not abandoned — `DESIGN.md` §1.1. The
   fourteen GBA ROMs on disk are not a shortcut to multi-game work: using them would change
