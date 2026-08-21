@@ -1394,6 +1394,23 @@ demonstrated it can resolve at n = 10 — not a number invented to be passable.
 - **Both fail.** Almost certainly a plumbing fault rather than a scientific result, given
   Phase 1 trained successfully on 1-1. Debug before drawing any conclusion.
 
+### 15.3.1 A pre-launch invariant: the INIT anchors must be task-independent
+
+At `--steps 0` the task cannot influence the weights — the model sees no observation, and the
+only task-sensitive input to construction, the centring constant, is `OBS_MEAN_PHASE2A`,
+which is by definition **the same mixture mean for both tasks** (§6.1). So the untrained
+checkpoint for seed *s* must be **bit-identical** whether it was produced under `--task 1-1`
+or `--task 2-1`.
+
+**This will be verified by hashing before any evaluation is run, not assumed.** It costs
+seconds and it catches a real failure: if the two differ, something task-dependent has leaked
+into model construction, and §8.1's lower anchor `R_init(j)` would silently stop being one
+untrained policy family scored on two tasks and become two different families — which is not
+the control §2.2 C2 specifies.
+
+If they are identical, as expected, the redundancy is harmless: ten distinct untrained
+policies, each scored on both tasks, is exactly what `R_init(j)` needs.
+
 ### 15.4 Secondary, descriptive, and explicitly not a gate
 
 Every specialist is also scored on the **other** task, filling the off-diagonal of §8.2's
