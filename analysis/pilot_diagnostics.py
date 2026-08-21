@@ -88,8 +88,9 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from models.embedding_init import EMBED_INIT_MODES  # noqa: E402
-from training.train import (LEARNING_RATE, MAX_GRAD_NORM, build_model,  # noqa: E402
-                            group_trainable_parameters)
+from training.train import (LEARNING_RATE, MAX_GRAD_NORM,  # noqa: E402
+                            RF_PERIOD_MIN_DEFAULT, RF_PERIOD_MAX_DEFAULT,
+                            build_model, group_trainable_parameters)
 
 CHECKPOINTS = os.path.join(REPO_ROOT, "checkpoints")
 REAL_OBS_PATH = os.path.join(REPO_ROOT, "tests", "data", "real_obs_6000.npy")
@@ -157,15 +158,26 @@ def silent_fraction(model, obs):
     on permanently silent, not the same thing -- a unit firing at true rate 1e-4
     reads as silent here. §12's limitations section says the same; it is repeated
     here so a number lifted out of this report carries its own caveat.
+
+    THE STATE TUPLE IS FOUR-WIDE IN BOTH NEURON MODELS (§23.2), and threading all
+    four is not optional even on the LIF arm. `imem` is the resonate-and-fire
+    quadrature companion; under LIF it is an inert zeros tensor that the reservoir
+    never reads, so passing it costs nothing and reproduces the pre-§23 numbers
+    exactly, while NOT passing it makes `step` re-allocate a fresh zeros tensor
+    per timestep and -- on the rf arm -- silently discard the quadrature state,
+    which would turn a resonate-and-fire measurement into a plausible, wrong one.
+    Unpacked positionally on purpose, so a future arity change fails loudly here
+    rather than dropping a component; `tests/test_pilot_diagnostics.py` covers
+    both modes for the same reason.
     """
-    mem, spk, _window = model.init_state(1, torch.device("cpu"))
+    mem, imem, spk, _window = model.init_state(1, torch.device("cpu"))
     ever = torch.zeros(model.reservoir_size, dtype=torch.bool)
     always = torch.ones(model.reservoir_size, dtype=torch.bool)
     total_rate = 0.0
     with torch.no_grad():
         for t in range(obs.shape[0]):
             emb = model.embedding(obs[t:t + 1])
-            spk, mem = model.reservoir.step(emb, mem, spk)
+            spk, mem, imem = model.reservoir.step(emb, mem, spk, imem)
             fired = spk[0] > 0
             ever |= fired
             always &= fired
@@ -175,7 +187,9 @@ def silent_fraction(model, obs):
             always.float().mean().item())
 
 
-def reservoir_at(seed, embed_init_mode, embed_scale, ckpt_path=None):
+def reservoir_at(seed, embed_init_mode, embed_scale, ckpt_path=None,
+                 neuron_model="lif", rf_period_min=RF_PERIOD_MIN_DEFAULT,
+                 rf_period_max=RF_PERIOD_MAX_DEFAULT):
     """The reservoir-arm model as this run had it, either at init or at a step.
 
     At init the construction sequence mirrors `run_training` exactly --
@@ -188,10 +202,23 @@ def reservoir_at(seed, embed_init_mode, embed_scale, ckpt_path=None):
     additionally checks them against the freshly-constructed ones: they must be
     bit-identical, which is an independent confirmation of spec §3's frozen
     invariant on the pilot's own files rather than on a fresh model.
+
+    `neuron_model`/`rf_period_min`/`rf_period_max` (docs/EXPERIMENT_LOG.md §23)
+    are FORWARDED VERBATIM to `build_model` and are not inferred from anything.
+    The defaults are the historical path, bit-for-bit, so every pre-§23 caller is
+    unaffected -- but unlike `embed_init_mode`/`embed_scale`, which the module
+    docstring above shows are inert once a checkpoint is loaded, THESE ARE NOT
+    INERT: an `rf` checkpoint carries five `reservoir.rf.*` buffers a LIF model
+    does not have, so `load_state_dict` refuses it outright rather than
+    overwriting. A caller that loads a checkpoint must therefore pass the
+    construction arguments the checkpoint was WRITTEN under -- read them with
+    `training.train.neuron_config_from_checkpoint`, which supplies the pre-§23
+    defaults for the 400 committed files that predate the keys.
     """
     torch.manual_seed(seed)
     model, _ = build_model("reservoir", seed=seed, embed_init_mode=embed_init_mode,
-                           embed_scale=embed_scale)
+                           embed_scale=embed_scale, neuron_model=neuron_model,
+                           rf_period_min=rf_period_min, rf_period_max=rf_period_max)
     frozen_drift = None
     if ckpt_path is not None:
         reference = {k: v.clone() for k, v in model.state_dict().items()
@@ -455,6 +482,15 @@ def embedding_dc_drift(seed, suffix, init_mode, scale, obs, mu):
                            direction and magnitude but does not equal it.
       AC std            -- std of W @ (obs - mu) over the fixture, i.e. the
                            INFORMATIVE part of the drive, for contrast with the DC.
+
+    THE `/(1 - beta)` OFFSET FACTOR HERE IS LIF-SPECIFIC AND STAYS THAT WAY. This
+    section reads the v1 `checkpoints/reservoir_seed{s}_{clip,clipemb}` runs by
+    hardcoded path, and every one of them is a LIF run -- the resonate-and-fire
+    neuron model postdates them by two generations. Under a rotated pole the
+    standing offset is scaled by the REAL PART of the complex DC gain instead
+    (docs/EXPERIMENT_LOG.md §23.10(b)); `analysis/reservoir_health.dc_offset_factor`
+    is the generalised version, and it is the one to reach for if this measurement
+    is ever pointed at an rf run.
     """
     torch.manual_seed(seed)
     model, _ = build_model("reservoir", seed=seed, embed_init_mode=init_mode,
