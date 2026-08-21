@@ -2802,3 +2802,69 @@ over**: v2's two arms have statistically indistinguishable episode lengths (353.
   checkpoint against a documented ~2% healthy band. Neither shipped fix regulates it.
   This is §15.5's successor problem, now measured over a full run rather than
   extrapolated, and it is the most concrete open architectural question this project has.
+
+## 22. PR #2 MERGED — the v2 mandate is closed
+
+The ledger's last operational statement was "PR opened and left open for the repository
+owner" (§17.9's delivery instruction, §21's close-out). That is no longer the state, and
+this entry exists so the file does not end on a status that has since changed — the exact
+staleness §14.1 cost an hour reconstructing.
+
+**Verified directly rather than taken on report**, via `gh pr view` and `git log` against
+`origin` after a fetch:
+
+| | |
+|---|---|
+| PR | **#2**, `exp/v2-corrected-matrix` → `main` |
+| state | **MERGED** |
+| merged at | **2026-08-21 10:09:34 UTC** (12:09:34 CEST) |
+| merged by | **`alfanowski`** — the repository owner, on his own review of the v2 result |
+| merge commit | **`708b32d`** |
+| strategy | **squash** — single parent, `"(#2)"` title suffix, matching PR #1's convention |
+
+`main` was confirmed to actually contain the work rather than merely to have moved: the
+`Phase 1 Results — v2` heading is present in `docs/RESULTS.md`, as is the headline figure
+`34.2404`. `main` went `133e09e` → `708b32d`.
+
+**This was the owner's decision, made on the evidence.** §13 reserves headline-bearing
+changes for him specifically because a document revising a published conclusion should not
+be self-merged by the session that wrote it, and that reservation was honoured: the PR was
+opened, left open, and merged by him.
+
+### 22.1 Status of Phase 1, stated plainly for whoever reads this next
+
+**Phase 1 is complete and both its comparisons are published.** `docs/RESULTS.md` carries
+v1 (as-specified) and v2 (corrected) beneath it, unedited. The answer to `DESIGN.md` §5 is
+that **the frozen spiking reservoir loses to a matched-parameter trained GRU baseline on
+this task**, in the as-specified protocol and again with the two diagnosed defects
+removed — the second time with the optimizer/clipping confound eliminated and the
+episode-length asymmetry that flattered the reservoir in v1 gone as well.
+
+**Nothing further is pending on the v2 mandate.** What remains open is recorded and is not
+oversight:
+
+- **Build-order Phase 2's precondition is unmet** and `docs/DESIGN.md` §7 now says so in a
+  status note that deliberately does **not** decide the build order. That call is the
+  owner's; `RESULTS.md` §22 is the evidence it should rest on.
+- **The three open items from §21.5** — the in-situ silent fraction under a v2-trained
+  policy, the un-run full-scale decomposition of the two fixes, and the runaway operating
+  point (spike rate 0.194 against a ~2% healthy band, regulated by neither shipped fix).
+  The third is the most concrete open architectural question this project has.
+- **Roadmap Phases 2–4** (`DESIGN.md` §1.1) are untouched by this work except that Phase 1
+  has now supplied the premise they were sequenced behind. Phase 3's remaining work is
+  formalising the already-proven mGBA Lua/socket bridge into a real `gymnasium.Env`; it was
+  deliberately not started by the v2 session, because scoping a new phase is design work
+  that belongs with the owner rather than something to begin unilaterally at the end of an
+  unattended run.
+
+### 22.2 Housekeeping left on disk
+
+- `checkpoints_v2_crashed/` — 292 MB, gitignored, the preserved wreckage of the §18 power
+  loss. **Its purpose is served**: the determinism check it existed for is complete and
+  recorded (§18.5, 523,236 values, 0 mismatches). Safe to delete at any time.
+- `checkpoints_v2/`, `checkpoints_v2_init/` — the v2 matrix itself, gitignored,
+  regenerable from the seed. The evaluation JSONs and every report are committed, so
+  nothing that a published number depends on lives only in these directories.
+- The two worktrees at `.claude/worktrees/{v2train,evalrun}` are disposable; `v2train` is
+  the commit `dc966a3` pin the v2 training ran from (§17.1) and is worth keeping only as
+  long as someone might want to reproduce those exact runs.
