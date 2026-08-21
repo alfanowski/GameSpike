@@ -152,7 +152,9 @@ if REPO_ROOT not in sys.path:
 # already agrees on). Re-declaring any of them here would create exactly the
 # "two independent copies of the same rule, silently drifting apart" failure
 # mode this project's other drivers go out of their way to avoid.
-from training.train import GRAD_CLIP_MODES, EMBED_INIT_MODES, run_dir_for
+from training.train import (GRAD_CLIP_MODES, EMBED_INIT_MODES, NEURON_MODELS,
+                            RF_PERIOD_MAX_DEFAULT, RF_PERIOD_MIN_DEFAULT,
+                            run_dir_for)
 
 ARMS = ("baseline", "reservoir")  # matches training/train.py's --arm choices
 DEFAULT_SEEDS = tuple(range(10))
@@ -310,6 +312,13 @@ class RunConfig:
     embed_init_mode: str
     embed_scale: float
     run_tag: Optional[str] = None
+    # Defaulted, unlike the fields above, so that every existing caller (and every
+    # existing test) that constructs a RunConfig without them keeps building the
+    # historical configuration rather than failing -- the same courtesy `run_tag`
+    # already gets, and the same defaults train.py's own CLI applies.
+    neuron_model: str = "lif"
+    rf_period_min: float = RF_PERIOD_MIN_DEFAULT
+    rf_period_max: float = RF_PERIOD_MAX_DEFAULT
 
 
 @dataclass
@@ -427,7 +436,14 @@ def build_command(python_exe: str, job: Job, config: RunConfig) -> list:
            "--seed", str(job.seed),
            "--grad-clip-mode", config.grad_clip_mode,
            "--embed-init-mode", config.embed_init_mode,
-           "--embed-scale", str(config.embed_scale)]
+           "--embed-scale", str(config.embed_scale),
+           # Always emitted, including at the default -- same rule as every flag
+           # above it. This argv is what lands in the launcher log and in
+           # `--dry-run`'s preview, and a run whose neuron model has to be
+           # inferred from an ABSENT flag is a run nobody can label afterwards.
+           "--neuron-model", config.neuron_model,
+           "--rf-period-min", str(config.rf_period_min),
+           "--rf-period-max", str(config.rf_period_max)]
     if config.run_tag:
         cmd += ["--run-tag", config.run_tag]
     return cmd
@@ -777,6 +793,19 @@ def parse_args(argv=None):
     parser.add_argument("--embed-scale", type=float, default=1.0,
                         help="forwarded to train.py's --embed-scale (default: 1.0, "
                              "matching train.py's own default)")
+    parser.add_argument("--neuron-model", choices=list(NEURON_MODELS), default="lif",
+                        help="forwarded to train.py's --neuron-model (default: lif, "
+                             "matching train.py's own default). 'rf' is the "
+                             "resonate-and-fire pilot of docs/EXPERIMENT_LOG.md §23 "
+                             "and is RESERVOIR-ONLY -- train.py raises on --arm "
+                             "baseline, so a matrix that spans both arms cannot be "
+                             "launched with it")
+    parser.add_argument("--rf-period-min", type=float, default=RF_PERIOD_MIN_DEFAULT,
+                        help="forwarded to train.py's --rf-period-min (default: 2.0, "
+                             "matching train.py's own default)")
+    parser.add_argument("--rf-period-max", type=float, default=RF_PERIOD_MAX_DEFAULT,
+                        help="forwarded to train.py's --rf-period-max (default: 32.0, "
+                             "matching train.py's own default)")
     parser.add_argument("--run-tag", default=None,
                         help="forwarded to train.py's --run-tag if given (omitted "
                              "entirely from the child command otherwise); also "
@@ -822,7 +851,8 @@ def main(argv=None) -> int:
         rom=args.rom, steps=args.steps, checkpoint_every=args.checkpoint_every,
         checkpoint_dir=args.checkpoint_dir, grad_clip_mode=args.grad_clip_mode,
         embed_init_mode=args.embed_init_mode, embed_scale=args.embed_scale,
-        run_tag=args.run_tag,
+        run_tag=args.run_tag, neuron_model=args.neuron_model,
+        rf_period_min=args.rf_period_min, rf_period_max=args.rf_period_max,
     )
     jobs = build_job_matrix(config, arms=args.arms, seeds=args.seeds)
 

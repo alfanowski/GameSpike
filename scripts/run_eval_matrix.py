@@ -100,8 +100,17 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from analysis.aggregate_results import build_eval_manifest
+# `--arms`/`--seeds` accept EXACTLY the spec syntax the training launcher already
+# implements (comma-separated arm names; comma-separated ints and inclusive `A-B`
+# ranges), and they accept it by importing that implementation rather than growing
+# a second one. Two parsers for one syntax drift, and the drift here would show up
+# as an evaluation matrix silently covering different cells than the training
+# matrix that produced the checkpoints -- a difference nothing downstream checks.
+# `ARMS` comes from the same place for the same reason: `parse_arms` validates
+# against `run_training_matrix.ARMS`, so a local copy could be accepted by one and
+# rejected by the other.
+from scripts.run_training_matrix import ARMS, parse_arms, parse_seeds
 
-ARMS = ("baseline", "reservoir")
 SEEDS = tuple(range(10))
 # "continuous" -> no --state-reset-interval; "reset128" -> --state-reset-interval 128.
 # Order matters only for deterministic output ordering (dry-run / progress).
@@ -674,6 +683,18 @@ def parse_args(argv=None):
     parser.add_argument("--selections", default=",".join(SELECTIONS),
                         help=f"comma-separated subset of {SELECTIONS} "
                              f"(default: all three)")
+    parser.add_argument("--arms", default=",".join(ARMS),
+                        help=f"comma-separated subset of {ARMS} (default: both). Same "
+                             f"spec syntax as scripts/run_training_matrix.py --arms, "
+                             f"because it is the same parser")
+    parser.add_argument("--seeds", default="0-9",
+                        help="comma-separated seeds and/or inclusive A-B ranges "
+                             "(default: 0-9). Same spec syntax as "
+                             "scripts/run_training_matrix.py --seeds, because it is "
+                             "the same parser. A subset matters for more than speed: "
+                             "the default spans all 10 seeds, so evaluating a 3-seed "
+                             "pilot without it reports 7 'no checkpoint' lines per arm "
+                             "that are noise rather than findings")
     args = parser.parse_args(argv)
 
     selections = tuple(s.strip() for s in args.selections.split(",") if s.strip())
@@ -681,6 +702,14 @@ def parse_args(argv=None):
         if s not in SELECTIONS:
             parser.error(f"--selections: unknown selection {s!r}, must be one of {SELECTIONS}")
     args.selections = selections
+    try:
+        args.arms = parse_arms(args.arms)
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        args.seeds = parse_seeds(args.seeds)
+    except ValueError as exc:
+        parser.error(str(exc))
     return args
 
 
@@ -693,6 +722,8 @@ def main(argv=None) -> int:
         init_checkpoint_dir=args.init_checkpoint_dir,
         results_dir=args.results_dir,
         selections=args.selections,
+        arms=args.arms,
+        seeds=args.seeds,
     )
 
     if args.dry_run:

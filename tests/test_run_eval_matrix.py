@@ -596,3 +596,79 @@ def test_run_job_fails_with_a_diagnostic_including_stderr_when_no_json_line_is_f
     for warning_line in _PYBOY_WARNING_LINES:
         assert warning_line in outcome["error"]
     assert not os.path.isfile(job.output_path)
+
+
+# ---------------------------------------------------------------------------
+# 11. --arms / --seeds: the matrix is now selectable from the command line.
+# ---------------------------------------------------------------------------
+
+def test_parse_args_defaults_to_the_full_matrix():
+    """The defaults ARE the published matrix (`ARMS` x seeds 0-9), so an
+    invocation that predates these two flags -- every command in
+    docs/RESULTS.md §23 and EXPERIMENT_LOG.md §17 -- still builds exactly the
+    120-cell job list it always did."""
+    args = run_eval_matrix.parse_args(["--rom", "fake.gb"])
+    assert args.arms == run_eval_matrix.ARMS
+    assert args.seeds == tuple(range(10))
+
+
+def test_parse_args_accepts_an_arm_and_seed_subset():
+    """The resonate-and-fire pilot is one arm and three seeds
+    (docs/EXPERIMENT_LOG.md §23.9), so evaluating it must not mean evaluating
+    the other 117 cells and reporting 117 'no checkpoint' lines."""
+    args = run_eval_matrix.parse_args(
+        ["--rom", "fake.gb", "--arms", "reservoir", "--seeds", "0-2"])
+    assert args.arms == ("reservoir",)
+    assert args.seeds == (0, 1, 2)
+
+
+def test_arms_and_seeds_use_the_training_launchers_own_parsers():
+    """Imported, never re-implemented: two parsers for one spec syntax drift,
+    and the drift shows up as a matrix that silently covers different cells
+    than the training matrix that produced it."""
+    from scripts.run_training_matrix import parse_arms, parse_seeds
+    assert run_eval_matrix.parse_arms is parse_arms
+    assert run_eval_matrix.parse_seeds is parse_seeds
+    # Same syntax as the training launcher, exercised through the eval CLI.
+    args = run_eval_matrix.parse_args(
+        ["--rom", "fake.gb", "--seeds", "5,0-2,2", "--arms", "reservoir,baseline"])
+    assert args.seeds == (0, 1, 2, 5)
+    assert args.arms == ("baseline", "reservoir")
+
+
+def test_parse_args_rejects_a_bad_arm_or_seed_spec():
+    with pytest.raises(SystemExit):
+        run_eval_matrix.parse_args(["--rom", "fake.gb", "--arms", "rogue"])
+    with pytest.raises(SystemExit):
+        run_eval_matrix.parse_args(["--rom", "fake.gb", "--seeds", "three"])
+
+
+def test_main_dry_run_builds_only_the_requested_cells(tmp_path, capsys, monkeypatch):
+    """`--dry-run --arms reservoir --seeds 0-2` must reach `build_job_matrix`'s
+    `arms=`/`seeds=` parameters, which have always existed and which nothing on
+    the command line could previously reach."""
+    checkpoint_dir = tmp_path / "checkpoints"
+    for arm in ("baseline", "reservoir"):
+        for seed in range(4):
+            _touch_run(checkpoint_dir, arm, seed, step=100)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("--dry-run must never spawn a subprocess")
+    monkeypatch.setattr(run_eval_matrix, "_run_subprocess", boom)
+
+    argv = [
+        "--rom", "fake.gb",
+        "--checkpoint-dir", str(checkpoint_dir),
+        "--init-checkpoint-dir", str(tmp_path / "checkpoints_init"),
+        "--results-dir", str(tmp_path / "results"),
+        "--selections", "final",
+        "--arms", "reservoir",
+        "--seeds", "0-2",
+        "--dry-run",
+    ]
+    assert run_eval_matrix.main(argv) == 0
+    out = capsys.readouterr().out
+    # 1 selection x 1 arm x 3 seeds x 2 regimes.
+    assert "TOTAL JOBS: 6" in out, out
+    assert "baseline" not in out
+    assert "seed3" not in out
