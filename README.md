@@ -36,16 +36,17 @@ complete: the PyBoy environment wrapper with an empirically-confirmed Super Mari
 map, the discrete action space, both competing policy-value models at a verified-matched
 trainable-parameter budget, the trajectory-novelty curiosity gate, the PPO core, rollout
 collection, the training loop and the evaluation harness — plus, added since, a task axis for
-starting at an arbitrary world-level, the results-aggregation and reservoir-health analysis
-modules, and the run drivers for both published matrices. A 412-test suite covers it.
+starting at an arbitrary world-level, a selectable resonate-and-fire neuron model alongside
+the default LIF, the results-aggregation and reservoir-health analysis modules, and the run
+drivers for both published matrices. A 617-test suite covers it.
 
-**What was open when work paused**, listed so nothing reads as quietly settled:
+**Everything described below is merged into `main`.** Each of the three tracks was reviewed
+and merged by the repository owner rather than self-merged by the session that produced it,
+under `EXPERIMENT_LOG.md` §13's rule that anything revising or extending a published
+conclusion is his to approve.
 
-- **PR #5 is open and unmerged** — the resonate-and-fire pilot (Track A below), which
-  includes a correction of record against the already-merged `RESULTS.md`. Under
-  `EXPERIMENT_LOG.md` §13, anything revising or extending a published conclusion is left for
-  the repository owner to review and is never self-merged. **Its contents are therefore not
-  on `main`.**
+**What is open at the pause point**, listed so nothing reads as quietly settled:
+
 - **Roadmap Phase 2's full experiment matrix is proposed, counted and unauthorised.** The
   validated testbed exists; the 160M-env-step matrix it would feed has not been started, and
   that decision is the owner's.
@@ -205,7 +206,7 @@ neither produced a headline that displaces Phase 1's.
 
 ### Track A — build-order Phase 2 (resonate-and-fire): a confirmed mechanism, and a pre-registered stop with no result
 
-Branch `feat/resonate-and-fire-pilot`, **PR #5 — open, unmerged, not on `main`.**
+Branch `feat/resonate-and-fire-pilot`, **PR #5, merged.**
 
 `DESIGN.md` §7 gates the resonate-and-fire neuron swap on *"once Phase 1 shows the reservoir
 arm beating baseline"*. **That precondition is not met.** This pilot ran anyway on a specific
@@ -235,13 +236,15 @@ written — which reads against the author, not for him.
 
 Two things it produced that are worth naming, both flagged at their real strength:
 
-- **A correction of record against the merged `RESULTS.md`** (fixture provenance: the
-  committed 6,000-step fixture §19 measures against is not the collection `OBS_MEAN` was
-  fitted to). It is **verdict-neutral** — every §19 verdict is taken at the final checkpoint,
-  A7 and A9 both stay far from their band edges, the runaway is still ×14 and the spike rate
-  still ends at 0.194 — and it reads **in the reservoir's favour**, which is the direction
-  worth disclosing loudest. It is appended beneath v2, editing none of v1's or v2's numbers,
-  and **it is on PR #5, not on `main`.**
+- **A correction of record against the already-published `RESULTS.md`**, now itself published
+  as [`RESULTS.md` §24](docs/RESULTS.md) (fixture provenance: the committed 6,000-step fixture
+  §19 measures against is not the collection `OBS_MEAN` was fitted to). It is
+  **verdict-neutral** — every §19 verdict is taken at the final checkpoint, A7 and A9 both
+  stay far from their band edges, the runaway is still ×14 and the spike rate still ends at
+  0.194 — and it reads **in the reservoir's favour**, which is the direction worth disclosing
+  loudest. It is appended beneath v2, **editing none of v1's or v2's numbers**, on the same
+  rule by which v2 was appended beneath v1. No remedy is applied: each available one changes
+  what a published number means, which is a decision rather than a correction.
 - **An incidental, post-hoc, n = 1 observation** that resonate-and-fire appears to remove v1's
   exploding-embedding-gradient pathology outright (median embedding `grad_norm` **0.4317** vs
   LIF's **3.705e4**). The gradient effect spans five orders of magnitude; the reward
@@ -309,7 +312,8 @@ levels does not license "train on the harder level" as advice.
   setup, the two controls, the return-vs-per-step decomposition, the gradient-clipping
   confound, the reservoir-construction findings and the limitations — then, appended beneath
   and never edited into v1, the corrected v2 comparison with the A7/A9 verdicts and a
-  v1-vs-v2 side by side.
+  v1-vs-v2 side by side — and beneath *that*, §24's verdict-neutral correction of record on
+  the observation fixture's provenance, appended on the same rule again.
 - [`docs/RESULTS_PHASE2A.md`](docs/RESULTS_PHASE2A.md) — **the Phase 2a specialist
   references** (SPEC-A / SPEC-B): the pre-registered gate and its GO verdicts, the performance
   matrix, the unregistered asymmetric-transfer finding with its multiple-comparison discount,
@@ -433,6 +437,8 @@ identically to both arms.
 Other flags: `--rollout-len` (truncated-BPTT window, default 128), `--checkpoint-every`
 (default 10000 steps; a final checkpoint is always written regardless),
 `--checkpoint-dir`, `--resume-from PATH`, `--task` (world-level, Phase 2a),
+`--neuron-model` (default `lif`; `rf` selects the resonate-and-fire reservoir from Track A,
+which **no published comparison uses** — see that track's caveats before running it),
 `--n-envs` (accepted, currently unused — collection is single-process).
 
 ### Evaluation
@@ -475,9 +481,9 @@ invocations, wall-clock times and the analysis commands that regenerate the repo
 python -m pytest tests/ -q
 ```
 
-412 tests, as of `main` at the time of writing. Without `MARIO_LAND_ROM_PATH` set:
-**298 passed, 114 skipped** — everything needing a real ROM skips cleanly. With it set:
-**411 passed, 1 skipped**, the remaining skip requiring a Phase 2a checkpoint, which is
+617 tests, as of `main` at the time of writing. Without `MARIO_LAND_ROM_PATH` set:
+**496 passed, 121 skipped** — everything needing a real ROM skips cleanly. With it set:
+**616 passed, 1 skipped**, the remaining skip requiring a Phase 2a checkpoint, which is
 gitignored and regenerable from the seed.
 
 ## License
