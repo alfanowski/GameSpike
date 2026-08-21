@@ -398,6 +398,27 @@ def test_the_rf_reservoir_holds_zero_nn_parameters_and_a_frozen_omega():
     model.assert_reservoir_frozen()
 
 
+def test_an_rf_forward_pass_does_not_move_a_single_frozen_buffer():
+    """The reason `TRANSIENT_RESERVOIR_BUFFERS` did not have to grow. snntorch's
+    Leaky needs an exception there because it stashes the membrane in `lif.mem` and
+    mutates it (and reshapes it) on every forward pass, including inference ones.
+    The resonate-and-fire cell holds no state -- (u, v) are threaded by the caller
+    -- so every buffer it owns is a frozen constant, and the tripwire covers all of
+    them unexceptioned. If a future refactor caches anything per-forward inside the
+    cell, this fails rather than quietly needing a new exception."""
+    model = _pv("rf")
+    state = model.init_state(2, device=torch.device("cpu"))
+    with torch.no_grad():
+        for _ in range(10):
+            _logits, _value, *state = model(torch.randn(2, 12), *state)
+    model.assert_reservoir_frozen()
+    snapshot = set(model._frozen_snapshot)
+    assert {"rf.omega", "rf.cos_omega", "rf.sin_omega"} <= snapshot, sorted(snapshot)
+    assert snapshot == {n for n, _ in model.reservoir.named_buffers()} - {"lif.mem"}, (
+        "a reservoir buffer is escaping the frozen-weight snapshot"
+    )
+
+
 def test_the_frozen_tripwire_catches_a_mutated_omega():
     """`omega` is a frozen weight in every sense that matters -- it defines the
     reservoir as surely as W_in does -- so the runtime tripwire has to cover it. A
