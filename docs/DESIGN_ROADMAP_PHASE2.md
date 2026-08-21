@@ -1465,6 +1465,36 @@ This is **reported descriptively and gates nothing.** It costs no extra training
 checkpoints, evaluated twice — and it is the first genuinely novel number this phase
 produces.
 
+### 15.4.1 Run log — written while the matrix runs, not after
+
+Following `EXPERIMENT_LOG.md` §20's practice: recorded live, so an interrupted session can be
+reconstructed cold rather than losing the context a crash already cost this project once.
+
+- **Launched 2026-08-21 14:47 CEST**, `scripts/run_phase2a_pipeline.sh`, `JOBS=8` on a
+  10-core M4 with the other track idle. Log: `phase2a_pipeline.log`.
+- **Stage 1 — INIT anchors: COMPLETE.** 10 seeds × 2 tasks at `--steps 0`, guard enumerated
+  all 20 expected `step_0.pt` paths and passed.
+- **Stage 2 — §15.3.1's invariant: HOLDS, all 10 seeds.** `--task 1-1` and `--task 2-1`
+  produce bit-identical model tensors at every seed, and different seeds differ. Checked
+  *before* spending the 20M env steps, because a failure here would mean control C2 is not
+  what §2.2 specifies and nothing downstream would be interpretable.
+- **Stage 3 — SPEC-A (1-1) launched 14:48**, 10 seeds × 1,000,064 steps, 8 concurrent
+  workers. SPEC-B (2-1) is chained behind it.
+- **Stage 4 — evaluation** chained behind both: `checkpoint_task × eval_task × seed ×
+  regime`, 30 episodes, both regimes, `final` and `init`. The off-diagonal cells are §15.4's
+  zero-shot transfer measurement.
+
+**Configuration as actually launched**, so the recipe reproduces the numbers:
+
+```
+scripts/run_phase2a_pipeline.sh          # JOBS=8, SEEDS=0-9, STEPS=1000000
+  → run_training_matrix --arms baseline --steps {0,1000000} --task {1-1,2-1}
+      --grad-clip-mode per-group --embed-init-mode centered --embed-scale 3.0
+      --checkpoint-dir checkpoints_p2a --init-checkpoint-dir checkpoints_p2a_init
+  → run_phase2a_eval --tasks 1-1,2-1 --arms baseline --episodes 30 --eval-seed 0
+      --results-dir results_p2a
+```
+
 ### 15.5 Three things these runs will NOT tell you
 
 Stated now so they cannot be claimed later:

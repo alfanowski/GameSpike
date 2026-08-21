@@ -41,3 +41,21 @@ pipeline_v2.log
 # overlapping updates, which is a third independent check of §2's determinism
 # property. 292 MB and regenerable from a seed, so not distributed.
 checkpoints_v2_crashed/
+
+# Phase 2a (docs/DESIGN_ROADMAP_PHASE2.md §15). Same reasoning as the v2 block
+# above: a separate --checkpoint-dir rather than a --run-tag suffix, so every run
+# directory keeps the exact name run_dir_for produces and no analysis path has to
+# learn a new spelling. Checkpoints and per-run logs are regenerable from a seed
+# and not worth distributing; the evaluation JSONs under results_p2a/ ARE
+# committed, exactly as Phase 1's results/ and results_v2/ trees are.
+checkpoints_p2a/**/*.pt
+checkpoints_p2a/**/*.json
+checkpoints_p2a/**/*.jsonl
+checkpoints_p2a/**/*.log
+checkpoints_p2a_init/
+# Top-level driver logs for the Phase 2a pipeline: regenerable and noisy, with the
+# per-job detail living in each run's own launcher.log.
+phase2a_pipeline.log
+phase2a_pipeline.out
+# The training-matrix launcher's own lock directory -- runtime state, never source.
+.run_training_matrix.lock/
